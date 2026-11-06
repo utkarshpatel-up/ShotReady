@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'">
+<title>ShotReady</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">Shot<span>Ready</span></div>
+  <nav id="tabs" class="tabs"></nav>
+  <div class="top-right">
+    <button id="bar-toggle" title="Show or hide the always-on-top bar">Bar</button>
+    <div id="switcher" class="seg" role="group" aria-label="Switcher"></div>
+    <div id="profile" class="seg" role="group" aria-label="Show profile"></div>
+    <label class="auto"><input type="checkbox" id="auto"> <span id="auto-text">Auto</span></label>
+    <button id="check" class="primary">Run check</button>
+  </div>
+</header>
+<div id="demo" class="demo" hidden>Demo mode: simulated cameras and switcher. Nothing here is live.</div>
+<main id="view"></main>
+<footer class="foot">
+  <span id="foot-left">Read-only: ShotReady never changes a camera or the switcher.</span>
+  <span id="foot-right"></span>
+</footer>
+<div id="modal" class="modal" hidden></div>
+<div id="toast" class="toast" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

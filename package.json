@@ -1,0 +1,53 @@
+{
+  "name": "shotready",
+  "productName": "ShotReady",
+  "version": "1.1.0",
+  "description": "Pre-mix camera verification and body tracking for Canon EOS C80 / C50 with Blackmagic ATEM 2 M/E switchers",
+  "author": "utkrashpatel-up",
+  "private": true,
+  "type": "module",
+  "main": "src/main/main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "demo": "electron . --demo",
+    "watch": "node tools/watch-camera.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "node test/e2e.mjs",
+    "dist:win": "electron-builder --win nsis --x64",
+    "dist:zip": "electron-builder --win zip --x64 -c.win.artifactName=ShotReady-${version}-Windows-Portable.${ext}"
+  },
+  "build": {
+    "appId": "com.shotready.app",
+    "npmRebuild": false,
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "config/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/@julusian/freetype2/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "ShotReady-${version}-Windows-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "dependencies": {
+    "atem-connection": "3.10.3"
+  },
+  "devDependencies": {
+    "electron": "45.2.3",
+    "electron-builder": "26.0.12",
+    "playwright-core": "1.56.1"
+  }
+}

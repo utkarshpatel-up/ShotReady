@@ -1,0 +1,35 @@
+{
+  "infoPath": "/-wvhttp-01-/info.cgi",
+  "auth": { "user": "", "pass": "" },
+
+  "standards": {
+    "allowedGamma": ["clog2_cgamut", "clog3_cgamut", "clog3_bt2020", "clog3_bt709"],
+    "shutterSpeed": 50,
+    "requireTally": true,
+    "requireRecording": true,
+    "minRecordMinutes": 60,
+    "approvedFirmware": { "EOS C80": ["1.0.7.1"] }
+  },
+
+  "bodies": [
+    { "id": "C80-1", "model": "EOS C80", "ip": "192.168.8.10" },
+    { "id": "C80-2", "model": "EOS C80", "ip": "192.168.8.2" },
+    { "id": "C80-3", "model": "EOS C80", "ip": "192.168.8.3" },
+    { "id": "C80-4", "model": "EOS C80", "ip": "192.168.8.4" },
+    { "id": "C80-5", "model": "EOS C80", "ip": "192.168.8.5" },
+    { "id": "C80-6", "model": "EOS C80", "ip": "192.168.8.6" },
+    { "id": "C80-7", "model": "EOS C80", "ip": "192.168.8.7" },
+    { "id": "C50-8", "model": "EOS C50", "ip": "192.168.8.8" }
+  ],
+
+  "locations": [
+    { "label": "Cam-01" },
+    { "label": "Cam-02" },
+    { "label": "Cam-03" },
+    { "label": "Cam-04" },
+    { "label": "Cam-05" },
+    { "label": "Cam-06" },
+    { "label": "Cam-07" },
+    { "label": "Cam-08" }
+  ]
+}
