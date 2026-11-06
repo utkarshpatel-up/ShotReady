@@ -691,8 +691,10 @@ test('waveform runs per camera, only reads frames, and clears when a camera goes
   } finally { svc.stop(); b.frame = null; }
 });
 
-test('turning Live off stops frame requests; no decoder means no requests', async () => {
-  const decodeJpeg = (buf) => ({ data: flat(4, 4, buf[0]), width: 4, height: 4, bgra: true });
+test('turning Live off stops reading frames', async () => {
+  // Counted at the decoder: services from earlier tests may still run their safety check against this simulator.
+  let frames = 0;
+  const decodeJpeg = (buf) => { frames++; return { data: flat(4, 4, buf[0]), width: 4, height: 4, bgra: true }; };
   svc = freshService({ decodeJpeg });
   svc.cfg.waveformMs = 5;
   const b = sim.bodies['C80-1'];
@@ -702,9 +704,9 @@ test('turning Live off stops frame requests; no decoder means no requests', asyn
   assert.ok(await until(() => svc.waves['C80-1']));
   svc.setAutoRefresh(false);
   await new Promise((r) => setTimeout(r, 30));
-  const n = b.requests;
+  const n = frames;
   await new Promise((r) => setTimeout(r, 60));
-  assert.equal(b.requests, n, 'no more requests after Live is off');
+  assert.equal(frames, n, 'no more frames after Live is off');
   svc.stop();
   b.frame = null;
 });
