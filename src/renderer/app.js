@@ -501,6 +501,66 @@ async function renderSettings() {
       h('button', { onclick: () => call('openDataFolder') }, 'Open data folder'))));
 }
 
+// ---------- software update ----------
+let updating = false;
+async function checkUpdates() {
+  const btn = $('update-btn');
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  const r = await act(() => call('updateCheck'));
+  btn.disabled = false;
+  btn.textContent = 'Check for updates';
+  if (r) showUpdate(r);
+}
+
+function showUpdate(r) {
+  const how = {
+    installed: `Downloads the new installer from GitHub${r.sizeMB ? ` (about ${r.sizeMB} MB)` : ''}, checks it against its checksum, installs it and restarts ShotReady.`,
+    source: 'Pulls the latest changes from GitHub into this folder and restarts ShotReady.',
+  };
+  const status = h('p', { class: 'err' });
+  const close = h('button', { class: r.canUpdate ? '' : 'primary', onclick: closeModal }, r.canUpdate ? 'Not now' : 'Close');
+  let title, body = [], actions = [close];
+  if (r.error) {
+    title = 'Could not check for updates';
+    body = [h('p', { class: 'err' }, r.error)];
+  } else if (!r.available) {
+    title = 'ShotReady is up to date';
+    body = [h('p', {}, `Version ${r.current} is the latest${r.detail ? ` (${r.detail})` : ''}.`)];
+  } else {
+    title = `Update available: ${r.current} → ${r.latest}`;
+    body = [
+      r.notes?.length ? h('ul', {}, r.notes.map((n) => h('li', {}, n))) : '',
+      r.reason ? h('p', { class: 'err' }, r.reason) : h('div', { class: 'note' }, `${how[r.mode] || ''} Monitoring stops for a few seconds while it restarts, so update between shows, not during one.`),
+    ];
+    if (r.canUpdate) {
+      actions.push(h('button', {
+        class: 'primary',
+        onclick: async (e) => {
+          if (updating) return;
+          updating = true;
+          e.target.disabled = true;
+          e.target.textContent = 'Updating… ShotReady will restart';
+          status.textContent = '';
+          try {
+            await call('updateApply');
+          } catch (err) {
+            updating = false;
+            e.target.disabled = false;
+            e.target.textContent = 'Update now';
+            status.textContent = String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+          }
+        },
+      }, 'Update now'));
+    } else if (r.mode === 'portable') {
+      actions.push(h('button', { class: 'primary', onclick: () => call('openReleases') }, 'Open download page'));
+    }
+  }
+  $('modal').replaceChildren(h('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true' },
+    h('h2', {}, title), ...body, status, h('div', { class: 'actions' }, ...actions)));
+  $('modal').hidden = false;
+}
+
 // ---------- start ----------
 async function start() {
   const init = await call('init');
@@ -508,7 +568,8 @@ async function start() {
   $('demo').hidden = !init.demo;
   $('auto').checked = init.autoRefresh;
   $('auto-text').textContent = 'Live';
-  $('foot-right').textContent = `ShotReady ${init.version}`;
+  $('foot-version').textContent = `ShotReady ${init.version}`;
+  $('update-btn').onclick = checkUpdates;
   renderTabs();
   renderSwitcher();
   renderProfile();

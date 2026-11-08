@@ -37,6 +37,22 @@ The installed app shows demo mode when started with `ShotReady.exe --demo`.
 | Log | Swaps, verdict changes, lens changes, bodies dropping out |
 | Settings | Labels, ATEM, login, team standard, body IPs |
 
+## Updating
+
+**Check for updates** (bottom right) asks GitHub for the latest version and shows what changed.
+**Update now** then does one of three things, depending on how ShotReady is running:
+
+- **Installed copy:** downloads the latest release's installer, checks it against the release's
+  SHA-256 file (a mismatch is deleted, never run), installs it and restarts. The repository is
+  private, so this uses the GitHub CLI, which must be installed and signed in (`gh auth login`).
+  No token is stored in ShotReady.
+- **Run from source (`npm start`):** `git fetch`, then `git pull --ff-only`. It refuses if the
+  folder has uncommitted changes or commits GitHub lacks. If packages changed, it reinstalls them
+  after exiting (progress in `update.log` in the data folder) and starts again.
+- **Portable zip:** cannot replace itself. It shows what is new and opens the download page.
+
+Monitoring stops for a few seconds during an update, so do it between shows.
+
 ## Mandatory settings
 
 Checked on every camera: Gamma flat (any Canon Log passes, any colour gamma is red, because the

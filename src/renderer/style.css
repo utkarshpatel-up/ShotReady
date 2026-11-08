@@ -157,3 +157,8 @@ button.chip.green { color: var(--green); }
 .facts .nd { color: var(--dim); }
 .facts .nocard.bad { color: var(--red); font-weight: 700; }
 .facts .nocard.soft { color: var(--text); font-weight: 400; opacity: .65; }
+
+/* software update */
+#update-btn { margin-left: 10px; }
+.dialog ul { margin: 0; padding-left: 20px; }
+.dialog li { margin: 2px 0; }

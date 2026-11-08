@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, clipboard, Men
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+import { checkForUpdate, applyUpdate, repoOf } from './updater.mjs';
 import { ShotReadyService } from '../core/service.mjs';
 import { AtemLink, FakeAtemLink } from '../core/atem.mjs';
 import { PROFILES } from '../core/engine.mjs';
@@ -21,6 +23,32 @@ const encrypt = (s) => {
 const decrypt = (s) => {
   try { return safeStorage.decryptString(Buffer.from(s, 'base64')); } catch { return ''; }
 };
+
+// ---------- software update ----------
+const REPO = repoOf(JSON.parse(readFileSync(join(here, '../../package.json'), 'utf8')));
+const updateCtx = () => ({
+  repo: REPO, version: app.getVersion(), packaged: app.isPackaged, root: join(here, '../..'),
+  installDir: dirname(process.execPath), tempDir: join(app.getPath('temp'), 'shotready-update'),
+});
+
+// Does the update, then ends this program so the new files can take over.
+async function installUpdate() {
+  const r = await applyUpdate(updateCtx());
+  svc?.stop(); svc?.atem?.disconnect(); sim?.close();
+  if (r.action === 'installer') {
+    // The installer closes and replaces the running copy, then starts the new one.
+    spawn(r.path, ['/S', '--updated', '--force-run'], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } else if (r.action === 'reinstall') {
+    // New packages replace this program's own files, so they are installed after it has exited.
+    const log = join(app.getPath('userData'), 'update.log');
+    const line = `ping -n 4 127.0.0.1 >nul & npm ci --ignore-scripts >> "${log}" 2>&1 && node node_modules\\electron\\install.js >> "${log}" 2>&1 && npm start >> "${log}" 2>&1`;
+    spawn('cmd.exe', ['/d', '/s', '/c', `"${line}"`], { cwd: updateCtx().root, detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true }).unref();
+  } else {
+    app.relaunch();
+  }
+  setTimeout(() => app.exit(0), 200);
+  return { ok: true };
+}
 
 function decodeJpeg(buf) {
   const img = nativeImage.createFromBuffer(buf);
@@ -164,6 +192,17 @@ const api = {
   print: () => new Promise((res) => win.webContents.print({}, (ok) => res(ok))),
   openDataFolder: () => shell.openPath(svc.dataDir),
   openReports: () => shell.openPath(svc.reportsDir),
+  // The environment variables are a test hook, honoured only when a throwaway data folder is given.
+  updateCheck: () => (dataOverride && process.env.SHOTREADY_TEST_UPDATE ? JSON.parse(process.env.SHOTREADY_TEST_UPDATE) : checkForUpdate(updateCtx())),
+  updateApply: async () => {
+    if (dataOverride && process.env.SHOTREADY_TEST_APPLY) {
+      await new Promise((r) => setTimeout(r, 600));
+      if (process.env.SHOTREADY_TEST_APPLY === 'fail') throw new Error('git pull failed');
+      return { ok: true };
+    }
+    return installUpdate();
+  },
+  openReleases: () => shell.openExternal(`https://github.com/${REPO}/releases/latest`),
 };
 
 ipcMain.handle('shotready:call', async (_e, method, args) => {
