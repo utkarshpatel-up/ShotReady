@@ -9,7 +9,7 @@ Writing settings stays off until Canon's XC documentation confirms which keys ca
 
 ## Run it
 
-Install `dist/ShotReady-1.2.0-Windows-Setup.exe`, or unzip the portable build. From source:
+Install `dist/ShotReady-1.3.0-Windows-Setup.exe`, or unzip the portable build. From source:
 
     npm install
     npx install-electron
