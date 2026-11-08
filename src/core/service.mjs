@@ -10,6 +10,9 @@ import {
 import { httpGet } from './http.mjs';
 import { CameraStream } from './stream.mjs';
 import { lumaStats } from './waveform.mjs';
+import { FrameSource } from './frames.mjs';
+import { FocusStream, normalizeFocus } from './focus.mjs';
+import { FeedServer } from './feedserver.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const HOST_RE = /^[A-Za-z0-9.-]+(:\d{1,5})?$/;
@@ -78,6 +81,15 @@ export class ShotReadyService extends EventEmitter {
     this.streams = {};
     this.streamRefused = {};
     this.waves = {};
+    // Live view: pictures and focus for the cameras someone is watching.
+    this.feed = new FeedServer({ onViewers: (id, n) => this.onViewers(id, n) });
+    this.frames = {};
+    this.focusStreams = {};
+    this.focus = {};
+    this.viewers = {};
+    this.waveAt = {};
+    this.dupAt = {};
+    this.frameCounts = {};
     this.timer = null;
     this.load();
     this.log('info', `ShotReady started${opts.demo ? ' in demo mode' : ''}`);
@@ -220,7 +232,14 @@ export class ShotReadyService extends EventEmitter {
   }
 
   async #check({ report = false } = {}) {
-    const reads = await Promise.all(this.cfg.bodies.map((b) => this.readBody(b)));
+    // The triple read that catches two cameras sharing an IP is only needed now and then. Doing
+    // it every few seconds triples the status traffic, which a weak link cannot spare.
+    const now = Date.now();
+    const reads = await Promise.all(this.cfg.bodies.map((b) => {
+      const due = now - (this.dupAt[b.id] || 0) > 60000;
+      if (due) this.dupAt[b.id] = now;
+      return this.readBody(b, { dupCheck: due });
+    }));
     this.reads = Object.fromEntries(reads.map((r) => [r.body.id, r]));
     return this.#evaluate({ report });
   }
@@ -331,6 +350,8 @@ export class ShotReadyService extends EventEmitter {
   // it catches a network that dies silently, and any setting the camera does not push.
   startLive() {
     this.liveEnabled = true;
+    this.feedReady = this.feed.start().catch((e) => { this.log('red', `Live view could not start: ${e.message}`); throw e; });
+    this.feedReady.catch(() => {});
     this.startStreams();
     this.startTimer();
   }
@@ -352,44 +373,113 @@ export class ShotReadyService extends EventEmitter {
         },
       });
     }
-    this.startWaves();
+    this.startFrames();
   }
 
   stopStreams() {
     for (const st of Object.values(this.streams)) st.stop();
     this.streams = {};
-    this.waveRun = null;
+    this.stopFrames();
   }
 
-  // One preview frame per camera per interval, read and measured. Skips cameras that are offline.
-  startWaves() {
-    if (!this.opts.decodeJpeg || !(this.cfg.waveformMs > 0)) return;
-    const run = {};
-    this.waveRun = run;
+  // ---------- live view ----------
+  // Every camera has a frame reader. It runs slowly in the background (just enough for the
+  // waveform) and fast while a card is on screen, which the feed server tells us about.
+  startFrames() {
     const path = this.cfg.infoPath.replace(/info\.cgi$/, 'image.cgi');
     for (const body of this.cfg.bodies) {
-      (async () => {
-        while (this.waveRun === run) {
-          let wave = null;
-          if (this.reads[body.id]?.info) {
-            try {
-              const res = await httpGet(`http://${body.ip}${path}`, this.authForRequests());
-              if (res.ok && /jpeg/i.test(res.headers.get('content-type') || '')) {
-                const { data, width, height, bgra } = this.opts.decodeJpeg(Buffer.from(await res.arrayBuffer()));
-                wave = lumaStats(data, width, height, { bgra });
-              }
-            } catch { /* shows as no reading; the regular check reports the camera itself */ }
-          }
-          if (this.waveRun !== run) return;
-          const was = this.waves[body.id] || null;
-          if (JSON.stringify(was) !== JSON.stringify(wave)) {
-            if (wave) this.waves[body.id] = wave; else delete this.waves[body.id];
-            this.emit('wave', { body: body.id, wave });
-          }
-          await new Promise((r) => setTimeout(r, this.cfg.waveformMs).unref?.());
-        }
-      })();
+      this.frames[body.id] = new FrameSource(`http://${body.ip}${path}`, () => this.authForRequests(), {
+        onFrame: (jpeg) => this.onFrame(body.id, jpeg),
+        onState: (state) => { if (state === 'down') this.setWave(body.id, null); },
+      });
     }
+    this.framesOn = true;
+    this.applyViewing();
+    for (const src of Object.values(this.frames)) src.start();
+    this.statTimer = setInterval(() => this.emitFeedStats(), 1000);
+    this.statTimer.unref?.();
+  }
+
+  stopFrames() {
+    this.framesOn = false;
+    clearInterval(this.statTimer);
+    for (const src of Object.values(this.frames)) src.stop();
+    this.frames = {};
+    for (const id of Object.keys(this.focusStreams)) this.stopFocus(id);
+  }
+
+  onViewers(id, n) {
+    this.viewers[id] = n;
+    this.applyViewing();
+  }
+
+  // The more cameras are watched, the fewer overlapping requests each one gets, so 8 live
+  // pictures do not swamp the network or the cameras. liveViewParallel (1 to 3) overrides it.
+  applyViewing() {
+    if (!this.framesOn) return;
+    const watched = Object.keys(this.viewers).filter((id) => this.viewers[id] > 0);
+    const fixed = Number(this.cfg.liveViewParallel);
+    // 8 overlapping requests to share between the watched cameras, at most 4 each (more than 4
+    // made the C80 return errors): 1 or 2 cameras get 4, 3 or 4 get 2, 5 or more get 1.
+    const parallel = fixed >= 1 && fixed <= 4 ? fixed : Math.max(1, Math.min(4, Math.floor(8 / Math.max(1, watched.length))));
+    const idle = this.opts.decodeJpeg && this.cfg.waveformMs > 0 ? { parallel: 1, intervalMs: this.cfg.waveformMs } : { parallel: 0, intervalMs: 0 };
+    for (const [id, src] of Object.entries(this.frames)) src.setMode(this.viewers[id] > 0 ? { parallel, intervalMs: 0 } : idle);
+    for (const body of this.cfg.bodies) {
+      const want = this.viewers[body.id] > 0;
+      if (want && !this.focusStreams[body.id]) this.startFocus(body);
+      else if (!want && this.focusStreams[body.id]) this.stopFocus(body.id);
+    }
+  }
+
+  onFrame(id, jpeg) {
+    this.feed.push(id, jpeg);
+    this.frameCounts[id] = (this.frameCounts[id] || 0) + 1;
+    if (!this.opts.decodeJpeg) return;
+    // Waveform from the same frames: quicker while someone is watching.
+    const gap = this.viewers[id] > 0 ? 250 : this.cfg.waveformMs;
+    const now = Date.now();
+    if (now - (this.waveAt[id] || 0) < gap) return;
+    this.waveAt[id] = now;
+    try {
+      const { data, width, height, bgra } = this.opts.decodeJpeg(jpeg);
+      this.setWave(id, lumaStats(data, width, height, { bgra }));
+    } catch { /* one bad frame is skipped */ }
+  }
+
+  setWave(id, wave) {
+    if (JSON.stringify(this.waves[id] || null) === JSON.stringify(wave)) return;
+    if (wave) this.waves[id] = wave; else delete this.waves[id];
+    this.emit('wave', { body: id, wave });
+  }
+
+  emitFeedStats() {
+    for (const id of Object.keys(this.viewers)) if (this.viewers[id] > 0) this.emit('feedstat', { body: id, fps: this.frameCounts[id] || 0 });
+    this.frameCounts = {};
+  }
+
+  startFocus(body) {
+    const path = this.cfg.infoPath.replace(/info\.cgi$/, 'meta.cgi');
+    this.focusStreams[body.id] = new FocusStream(`http://${body.ip}${path}`, () => this.authForRequests(), {
+      onMeta: (meta) => this.setFocus(body.id, normalizeFocus(meta)),
+      onDown: () => this.setFocus(body.id, null),
+    });
+  }
+
+  stopFocus(id) {
+    this.focusStreams[id]?.stop();
+    delete this.focusStreams[id];
+    this.setFocus(id, null);
+  }
+
+  setFocus(id, focus) {
+    if (JSON.stringify(this.focus[id] || null) === JSON.stringify(focus)) return;
+    if (focus) this.focus[id] = focus; else delete this.focus[id];
+    this.emit('focus', { body: id, focus });
+  }
+
+  async feedBase() {
+    await this.feedReady;
+    return this.feed.bases();
   }
 
   liveStatus() {
@@ -757,6 +847,7 @@ export class ShotReadyService extends EventEmitter {
     this.timer = null;
     this.liveEnabled = false;
     this.stopStreams();
+    this.feed.stop();
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; this.saveState(); }
   }
 }

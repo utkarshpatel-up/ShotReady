@@ -29,23 +29,41 @@ function decodeJpeg(buf) {
   return { data: img.toBitmap(), width, height, bgra: true };
 }
 
-// Demo only: a dark-to-bright picture, different on each camera.
-function demoFrame(i) {
-  const width = 64, height = 36;
+// Demo only: a dark-to-bright picture, different on each camera, with a bar that moves so the
+// feed can be seen to be live.
+function demoFrame(i, tick) {
+  const width = 128, height = 72;
   const top = 90 + i * 18;
   const data = Buffer.alloc(width * height * 4, 255);
+  const bar = (tick * 4) % width;
   for (let n = 0; n < width * height; n++) {
-    const y = 30 + Math.round((top - 30) * ((n % width) / (width - 1)));
+    const col = n % width;
+    let y = 30 + Math.round((top - 30) * (col / (width - 1)));
+    if (Math.abs(col - bar) < 5) y = 235;
     data[n * 4] = data[n * 4 + 1] = data[n * 4 + 2] = y;
   }
   return nativeImage.createFromBitmap(data, { width, height }).toJPEG(95);
 }
 
+// What each demo camera's focus guide says: some sharp, some soft, one in auto focus.
+const DEMO_FOCUS = [
+  { status: true, level: 2, angle: 0, dir: 'front', pos: { x: 5000, y: 5000, w: 1200, h: 2100 } },
+  { status: true, level: 2, angle: 0, dir: 'front', pos: { x: 3600, y: 4600, w: 1000, h: 1750 } },
+  { status: true, level: 0, angle: 38, dir: 'front', pos: { x: 6400, y: 5200, w: 1400, h: 2450 } },
+  { status: true, level: 1, angle: 14, dir: 'behind', pos: { x: 5000, y: 4300, w: 1100, h: 1900 } },
+  null,
+  { status: true, level: 2, angle: 0, dir: 'front', pos: { x: 4200, y: 5600, w: 1300, h: 2300 } },
+  { status: true, level: 2, angle: 0, dir: 'front', pos: { x: 5000, y: 5000, w: 1000, h: 1750 } },
+  { status: true, level: 0, angle: 52, dir: 'behind', pos: { x: 5600, y: 5000, w: 1200, h: 2100 } },
+];
+
 async function startService() {
   const base = dataOverride || app.getPath('userData');
   if (isDemo) {
     const dataDir = dataOverride || join(base, 'demo');
-    sim = await startSimulator(demoBodies().map((b, i) => ({ ...b, frame: demoFrame(i) })));
+    let tick = 0;
+    sim = await startSimulator(demoBodies().map((b, i) => ({ ...b, focus: DEMO_FOCUS[i], frame: () => demoFrame(i, tick++) })));
+    for (const b of Object.values(sim.bodies)) b.frameDelayMs = 60;
     // Simulator ports change each launch, so a demo always starts from a clean config.
     const config = sim.config({ pollSeconds: 10 });
     const atem = new FakeAtemLink({
@@ -78,17 +96,27 @@ async function startService() {
   svc.on('log', (e) => send('log', e));
   svc.on('atem', (a) => send('atem', a));
   svc.on('wave', (w) => send('wave', w));
+  svc.on('focus', (f) => send('focus', f));
+  svc.on('feedstat', (f) => send('feedstat', f));
   svc.startLive();
-  // Demo only: someone keeps adjusting C80-2's white balance, so live updates can be seen.
+  // Demo only: someone keeps adjusting C80-2's white balance, and C80-1 keeps drifting out of
+  // focus and back, so live updates can be seen.
   if (isDemo) {
     let warm = false;
     setInterval(() => { warm = !warm; sim.bodies['C80-2'].update({ 'c.1.wb.kelvin': warm ? '5400' : '5600' }); }, 3000).unref();
+    let soft = false;
+    setInterval(() => {
+      soft = !soft;
+      sim.bodies['C80-1'].setFocus(soft ? { ...DEMO_FOCUS[0], level: 0, angle: 30 } : DEMO_FOCUS[0]);
+    }, 4000).unref();
   }
 }
 
 // The renderer can reach only what is listed here.
 const api = {
-  init: () => ({
+  init: async () => ({
+    feed: await svc.feedBase(),
+    focus: svc.focus,
     profiles: PROFILES,
     profile: svc.profile,
     switcher: svc.state.switcher,

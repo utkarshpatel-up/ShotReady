@@ -30,7 +30,7 @@ const SWITCHERS = { constellation: 'Constellation', '2me': '2 M/E 2RU' };
 const fmtWave = (w) => (w ? `${w.peak}% avg ${w.avg}%` : '—');
 const fmtRuntime = (ms) => { const m = Math.floor(ms / 60000); return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`; };
 
-const app = { tab: 'dashboard', profile: '4K25', switcher: 'constellation', profiles: {}, bodies: [], result: null, atem: {}, busy: false, keepOpen: new Set() };
+const app = { tab: 'dashboard', profile: '4K25', switcher: 'constellation', profiles: {}, bodies: [], result: null, atem: {}, busy: false, keepOpen: new Set(), feeds: {}, focus: {}, feedBase: [] };
 
 function toast(text, bad = false) {
   const t = $('toast');
@@ -46,12 +46,27 @@ async function act(fn) {
 }
 
 // ---------- tabs ----------
-const TABS = { dashboard: ['Dashboard', renderDashboard], bodies: ['Bodies', renderBodies], sheet: ['Label sheet', renderSheet], workload: ['Workload', renderWorkload], log: ['Log', renderLog], settings: ['Settings', renderSettings] };
+const TABS = { dashboard: ['Dashboard', renderDashboard], checks: ['Checks', renderChecks], bodies: ['Bodies', renderBodies], sheet: ['Label sheet', renderSheet], workload: ['Workload', renderWorkload], log: ['Log', renderLog], settings: ['Settings', renderSettings] };
 function renderTabs() {
   $('tabs').replaceChildren(...Object.entries(TABS).map(([k, [name]]) =>
     h('button', { class: app.tab === k ? 'on' : '', onclick: () => { app.tab = k; renderTabs(); refreshView(); } }, name)));
 }
-function refreshView() { return TABS[app.tab][1](); }
+function refreshView() {
+  const done = TABS[app.tab][1]();
+  syncFeeds();
+  return done;
+}
+function refreshLive() {
+  if (app.tab === 'dashboard') renderDashboard();
+  else if (app.tab === 'checks') renderChecks();
+}
+// Rebuilding while a dropdown is open would snap it shut under the operator's cursor, and
+// swapping a button out from under a click that is halfway through would lose the click.
+function rebuildBlocked() {
+  const view = $('view');
+  if ((document.activeElement?.tagName === 'SELECT' && view.contains(document.activeElement)) || app.pointerDown) { app.deferred = true; return true; }
+  return false;
+}
 
 function renderProfile() {
   $('profile').replaceChildren(...Object.entries(app.profiles).map(([k, p]) =>
@@ -118,41 +133,135 @@ async function assign(label, body) {
   if (res.diff?.rows.length) showDiffResult(res.diff);
 }
 
+const cardOf = (body) => app.result && (app.result.labels.find((l) => l.body === body) || app.result.spares.find((x) => x.body === body));
+const cardsOf = (r) => app.bodies.map((b) => r.labels.find((l) => l.body === b.id) || r.spares.find((x) => x.body === b.id)).filter(Boolean);
+
+// One picture element per camera, kept for good. The dashboard is rebuilt on every update, but
+// the same element is moved into the new card, so the picture never restarts or flickers.
+function feedEl(body) {
+  let f = app.feeds[body];
+  if (f) return f;
+  const img = h('img', { alt: '', draggable: false });
+  const box = h('div', { class: 'fbox gone' });
+  const chip = h('div', { class: 'fchip', hidden: true });
+  const fps = h('div', { class: 'ffps' });
+  const none = h('div', { class: 'fnone' }, 'No video');
+  const wrap = h('div', { class: 'feed', role: 'img', 'aria-label': `Live view of ${body}` }, img, box, chip, fps, none);
+  f = app.feeds[body] = { wrap, img, box, chip, fps, none, connected: false };
+  img.addEventListener('error', () => {
+    if (!f.connected) return;
+    f.connected = false;
+    setTimeout(() => connectFeed(body), 1000);
+  });
+  return f;
+}
+
+// Pictures are only fetched while a camera's card is actually on screen.
+function connectFeed(body) {
+  const f = app.feeds[body];
+  if (!f || !app.feedBase) return;
+  // No connection for a camera that is not answering. Each connection is one of the browser's few.
+  // A short drop does not disconnect the picture: only 15 seconds of the camera not answering does.
+  const online = !!cardOf(body)?.online;
+  if (online) f.lastOnline = Date.now();
+  const keep = f.connected && Date.now() - (f.lastOnline || 0) < 15000;
+  const want = app.tab === 'dashboard' && document.visibilityState === 'visible' && (online || keep);
+  if (want && !f.connected) {
+    const bases = app.feedBase;
+    const base = bases[Math.max(0, app.bodies.findIndex((b) => b.id === body)) % bases.length];
+    f.img.src = `${base}/${encodeURIComponent(body)}.mjpeg?${Date.now()}`;
+    f.connected = true;
+  } else if (!want && f.connected) {
+    f.img.removeAttribute('src');
+    f.connected = false;
+    f.fps.textContent = '';
+  }
+}
+function syncFeeds() { for (const body of Object.keys(app.feeds)) connectFeed(body); }
+
+// Green box: in focus. Red box: not. No box when the camera gives no focus guide (auto focus).
+function paintFeed(body) {
+  const f = app.feeds[body];
+  if (!f) return;
+  const c = cardOf(body);
+  const online = !!c?.online;
+  f.wrap.classList.toggle('off', !online);
+  f.none.hidden = online;
+  const focus = online ? app.focus[body] : null;
+  if (focus?.box) {
+    const b = focus.box;
+    f.box.style.cssText = `left:${b.x * 100}%;top:${b.y * 100}%;width:${b.w * 100}%;height:${b.h * 100}%`;
+    f.box.className = `fbox ${focus.focused ? 'ok' : 'bad'}`;
+  } else {
+    f.box.className = 'fbox gone';
+  }
+  let text = '', kind = 'none';
+  if (online && focus?.guide) {
+    kind = focus.focused ? 'ok' : 'bad';
+    text = focus.focused ? 'IN FOCUS' : `OUT OF FOCUS · ${focus.dir === 'behind' ? 'back' : 'front'} focus`;
+  } else if (online) {
+    const mode = c?.summary?.lensFocus === 'af' ? 'AF' : c?.summary?.lensFocus === 'mf' ? 'MF' : '';
+    text = `${mode ? `${mode} · ` : ''}no focus data`;
+  }
+  f.chip.textContent = text;
+  f.chip.className = `fchip ${kind}`;
+  f.chip.hidden = !text;
+  f.chip.title = focus?.guide ? `Focus guide level ${focus.level} of 2 (2 is sharp), off by ${focus.angle} (0 is sharp)` : 'The camera reports no focus guide in this mode';
+}
+
+// A slot that cannot record is shown as No SD Card. The camera only says recordable or not, so
+// this also covers a full, locked or unformatted card. Red and bold when neither slot can
+// record; plain light text when the other slot is fine, so it does not distract.
+function slot(m, other) {
+  if (m.status === '?') return h('dd', {}, '—');
+  if (m.status !== 'unrecordable') return h('dd', {}, `${m.minutes} min`);
+  return h('dd', { class: `nocard ${other.status === 'unrecordable' ? 'bad' : 'soft'}`, title: 'This slot cannot record: no card, or the card is full, locked or not formatted' }, 'No SD Card');
+}
+const DETECT = { off: 'OFF', ppl_catch: 'ON', ppl_only: 'People only', anml_only: 'Animals only', anml_catch: 'Animals' };
+const DETECT_TIP = { off: 'Subject detection off', ppl_catch: 'People priority', ppl_only: 'People only', anml_only: 'Animals only', anml_catch: 'Animals priority' };
+
 function card(c) {
   const s = c.summary;
-  const all = [...c.results, ...(c.checks || [])].map((r) => ({ ...r, label: c.label, body: c.body }));
-  const problems = all.filter((r) => r.status === 'red' || r.status === 'yellow');
-  const toConfirm = problems.filter((r) => r.action === 'confirm');
+  const all = [...c.results, ...(c.checks || [])];
+  const reds = all.filter((r) => r.status === 'red').length;
+  const yellows = all.filter((r) => r.status === 'yellow').length;
   const tally = c.tally;
   const onPgm = tally?.program?.length, onPvw = tally?.preview?.length;
-  const key = c.body;
-  const details = s ? h('details', { open: app.keepOpen.has(key), ontoggle: (e) => { if (e.target.open) app.keepOpen.add(key); else app.keepOpen.delete(key); } },
-    h('summary', {}, 'All checks'), h('div', { class: 'rows' }, all.map(row))) : null;
+  const feed = feedEl(c.body);
 
-  return h('section', { class: `card ${c.spare ? 'spare' : cardColor(c)} ${c.online ? '' : 'offline'}`, 'data-body': c.body, 'data-tally': onPgm ? 'pgm' : onPvw ? 'pvw' : '' },
+  const section = h('section', { class: `card ${c.spare ? 'spare' : cardColor(c)} ${c.online ? '' : 'offline'}`, 'data-body': c.body, 'data-tally': onPgm ? 'pgm' : onPvw ? 'pvw' : '' },
     h('div', { class: 'card-head' },
       h('span', { class: 'name' }, c.body),
       onPgm ? h('span', { class: 'badge pgm' }, `PGM${tally.program.length > 1 || tally.program[0] > 1 ? ` M/E ${tally.program.join('+')}` : ''}`) : null,
       onPvw ? h('span', { class: 'badge pvw' }, `PVW${tally.preview.length > 1 || tally.preview[0] > 1 ? ` M/E ${tally.preview.join('+')}` : ''}`) : null,
       labelSelect(c)),
     h('div', { class: 'sub-line', title: s?.lens }, `${c.ip}${s ? ` · ${s.model} · ${shortLens(s.lens)}` : ''}`),
+    feed.wrap,
     s ? h('dl', { class: 'facts' },
       h('dt', {}, 'SDI'), h('dd', {}, fmtVideo(s.output)),
       h('dt', {}, 'Gamma'), h('dd', { title: s.gamma }, s.gamma),
       h('dt', {}, 'Shutter'), h('dd', {}, s.shutterMode === 'speed' ? `1/${s.shutter}` : s.shutterMode),
-      h('dt', {}, 'ISO'), h('dd', {}, s.iso),
+      h('dt', {}, 'ISO'), h('dd', {}, s.iso, h('span', { class: 'nd' }, `  ·  ND ${s.nd}`)),
       h('dt', {}, 'WB'), h('dd', {}, s.wbMode === 'kelvin' ? `${s.wbKelvin} K` : s.wbMode),
-      h('dt', {}, 'ND'), h('dd', {}, s.nd),
-      h('dt', {}, 'Card A'), h('dd', {}, s.media[0].status === 'unrecordable' ? 'not usable' : `${s.media[0].minutes} min`),
-      h('dt', {}, 'Card B'), h('dd', {}, s.media[1].status === 'unrecordable' ? 'not usable' : `${s.media[1].minutes} min`),
+      h('dt', {}, 'Focus'), h('dd', { title: 'The AF / MF switch on the lens' }, s.lensFocus === 'af' ? 'AF' : s.lensFocus === 'mf' ? 'MF' : '—'),
+      h('dt', {}, 'Card A'), slot(s.media[0], s.media[1]),
+      h('dt', {}, 'Card B'), slot(s.media[1], s.media[0]),
+      h('dt', {}, 'People Priority'), h('dd', { title: DETECT_TIP[s.detect] || s.detect }, DETECT[s.detect] || s.detect || '—'),
+      h('dt', {}, 'Continuous AF'), h('dd', { title: 'From the camera focus mode: auto is Continuous AF on, manual is off' }, s.focusMode === 'auto' ? 'ON' : s.focusMode === 'manual' ? 'OFF' : '—'),
       h('dt', { title: 'Peak and average level, calculated from the camera preview frame' }, 'WFM'), h('dd', { 'data-wfm': c.body }, fmtWave(app.waves[c.body]))) : null,
     c.spare ? h('div', { class: 'spare-note' }, c.online ? 'Spare: not counted in the verdict until it has a label.' : 'Spare and offline.') : null,
-    problems.length ? h('div', { class: 'rows' }, problems.map(row)) : (c.online ? h('div', { class: 'all-ok' }, `${ICON.green} All checks passed`) : null),
-    details,
-    c.online ? h('div', { class: 'card-foot' },
-      toConfirm.length > 1 ? h('button', { class: 'small', onclick: () => act(() => call('confirm', c.body, toConfirm.map((r) => r.confirmId))) }, `Confirm all (${toConfirm.length})`) : null,
-      c.label ? h('button', { class: 'small', onclick: () => showDiff(c.label) }, c.ref ? `Compare with ${c.ref.fromBody}${c.diffCount ? ` (${c.diffCount})` : ''}` : 'Compare') : null,
-      c.label ? h('button', { class: 'small', onclick: () => snapshot(c.label) }, 'Save as reference') : null) : null);
+    h('button', { class: `chip ${reds ? 'red' : yellows ? 'yellow' : 'green'}`, onclick: () => openChecks(c.body) },
+      reds || yellows ? `${reds ? `${ICON.red} ${reds} red` : ''}${reds && yellows ? '  ' : ''}${yellows ? `${ICON.yellow} ${yellows} yellow` : ''}  ·  see Checks` : `${ICON.green} All checks passed`));
+  paintFeed(c.body);
+  connectFeed(c.body);
+  return section;
+}
+
+function openChecks(body) {
+  app.tab = 'checks';
+  renderTabs();
+  refreshView();
+  setTimeout(() => document.querySelector(`.panel[data-body="${body}"]`)?.scrollIntoView({ block: 'center' }), 0);
 }
 
 async function snapshot(label) {
@@ -161,36 +270,66 @@ async function snapshot(label) {
   else if (r?.[0]?.skipped) toast(`${label}: ${r[0].skipped}`, true);
 }
 
-function renderDashboard() {
-  const r = app.result;
-  const view = $('view');
-  if (!r) { view.replaceChildren(h('div', { class: 'verdict pending' }, h('span', { class: 'big' }, 'Reading cameras…'))); return; }
-
-  // Rebuilding while a dropdown is open would snap it shut under the operator's cursor.
-  if (document.activeElement?.tagName === 'SELECT' && view.contains(document.activeElement)) { app.deferred = true; return; }
-  // Nor can it swap a button out from under a click that is halfway through.
-  if (app.pointerDown) { app.deferred = true; return; }
-
-  const unassigned = r.labels.every((l) => !l.body);
-  const cards = app.bodies.map((b) => r.labels.find((l) => l.body === b.id) || r.spares.find((x) => x.body === b.id)).filter(Boolean);
-  const empty = r.labels.filter((l) => !l.body).map((l) => l.label);
+// The verdict and the show-wide findings, shown above both tabs.
+function banner(r) {
   const atem = app.atem;
   const liveText = r.live?.enabled ? `Live ${r.live.connected}/${r.live.total} cameras · ` : '';
   const atemText = atem.connected ? `ATEM ${atem.modeLabel}` : atem.configured ? 'ATEM not connected' : 'No ATEM set';
-  view.replaceChildren(
+  return [
     h('div', { class: `verdict ${r.verdict}` },
       h('span', { class: 'big', id: 'verdict' }, VERDICT[r.verdict]),
       h('span', { class: 'sub' }, `${r.switcherName} · ${r.profile} (${r.profileLabel}) · ${r.reds} red · ${r.yellows} yellow`),
       h('span', { class: 'spacer' }),
       h('span', { class: 'sub' }, `${liveText}${atemText} · updated ${new Date(r.time).toLocaleTimeString()}`)),
     r.global.filter((g) => g.status !== 'green').length ? h('div', { class: 'global' }, r.global.filter((g) => g.status !== 'green').map(row)) : '',
+  ];
+}
+
+function renderDashboard() {
+  const r = app.result;
+  const view = $('view');
+  if (!r) { view.replaceChildren(h('div', { class: 'verdict pending' }, h('span', { class: 'big' }, 'Reading cameras…'))); return; }
+  if (rebuildBlocked()) return;
+
+  const unassigned = r.labels.every((l) => !l.body);
+  const empty = r.labels.filter((l) => !l.body).map((l) => l.label);
+  view.replaceChildren(
+    ...banner(r),
     unassigned ? h('div', { class: 'setup' }, 'No bodies are assigned yet.',
       h('button', { class: 'primary', onclick: () => runBusy(() => call('assignInOrder')) }, 'Assign in order'),
       h('span', { class: 'empty' }, 'First body gets the first label, and so on. Change any card afterwards.')) : '',
     empty.length && !unassigned ? h('div', { class: 'global' }, row({ status: 'yellow', check: 'No body', detail: `${empty.join(', ')} ${empty.length > 1 ? 'have' : 'has'} no camera` })) : '',
-    h('div', { class: 'grid' }, cards.map(card)),
+    h('div', { class: 'grid' }, cardsOf(r).map(card)),
+  );
+}
+
+// ---------- checks ----------
+function checkPanel(c) {
+  const order = { red: 0, yellow: 1, info: 2, green: 3 };
+  const all = [...c.results, ...(c.checks || [])].map((r) => ({ ...r, label: c.label, body: c.body })).sort((a, b) => order[a.status] - order[b.status]);
+  const toConfirm = all.filter((r) => r.action === 'confirm');
+  return h('section', { class: `panel ${c.spare ? 'spare' : cardColor(c)}`, 'data-body': c.body },
+    h('div', { class: 'card-head' },
+      h('span', { class: 'name' }, c.body),
+      h('span', { class: 'sub-line' }, `${c.label || 'Spare'}${c.summary ? ` · ${shortLens(c.summary.lens)}` : ''}`)),
+    c.spare ? h('div', { class: 'spare-note' }, 'Spare: not counted in the verdict until it has a label.') : null,
+    h('div', { class: 'rows' }, all.map(row)),
+    c.online ? h('div', { class: 'card-foot' },
+      toConfirm.length > 1 ? h('button', { class: 'small', onclick: () => act(() => call('confirm', c.body, toConfirm.map((r) => r.confirmId))) }, `Confirm all (${toConfirm.length})`) : null,
+      c.label ? h('button', { class: 'small', onclick: () => showDiff(c.label) }, c.ref ? `Compare with ${c.ref.fromBody}${c.diffCount ? ` (${c.diffCount})` : ''}` : 'Compare') : null,
+      c.label ? h('button', { class: 'small', onclick: () => snapshot(c.label) }, 'Save as reference') : null) : null);
+}
+
+function renderChecks() {
+  const r = app.result;
+  const view = $('view');
+  if (!r) { view.replaceChildren(h('div', { class: 'verdict pending' }, h('span', { class: 'big' }, 'Reading cameras…'))); return; }
+  if (rebuildBlocked()) return;
+  view.replaceChildren(
+    ...banner(r),
     r.matching.length ? h('div', { class: 'section' }, h('h2', {}, 'Camera matching'),
       h('div', { class: 'rows' }, r.matching.map((m) => row({ status: 'yellow', check: m.name, detail: m.detail })))) : '',
+    h('div', { class: 'checks-grid' }, cardsOf(r).map(checkPanel)),
   );
 }
 
@@ -299,8 +438,6 @@ async function renderSettings() {
     minutes: h('input', { type: 'number', min: 0, value: s.standards.minRecordMinutes }),
     tally: h('input', { type: 'checkbox', checked: s.standards.requireTally }),
     rec: h('input', { type: 'checkbox', checked: s.standards.requireRecording }),
-    fw: text({ value: (s.standards.approvedFirmware?.['EOS C80'] || []).join(', ') }),
-    fw50: text({ value: (s.standards.approvedFirmware?.['EOS C50'] || []).join(', ') }),
   };
   const locs = s.locations.map((l) => ({
     label: text({ value: l.label }), input: h('input', { type: 'number', min: 0, value: l.atemInput || '' }),
@@ -321,9 +458,6 @@ async function renderSettings() {
   };
   const list = (v) => v.split(',').map((x) => x.trim()).filter(Boolean);
   const save = async () => {
-    const approved = {};
-    if (list(f.fw.value).length) approved['EOS C80'] = list(f.fw.value);
-    if (list(f.fw50.value).length) approved['EOS C50'] = list(f.fw50.value);
     const payload = {
       auth: { user: f.user.value, pass: pass.value },
       atem: { ip: f.atem.value },
@@ -331,7 +465,7 @@ async function renderSettings() {
       autoRefresh: f.auto.checked,
       standards: {
         allowedGamma: list(f.gamma.value), shutterSpeed: Number(f.shutter.value),
-        minRecordMinutes: Number(f.minutes.value), requireTally: f.tally.checked, requireRecording: f.rec.checked, approvedFirmware: approved,
+        minRecordMinutes: Number(f.minutes.value), requireTally: f.tally.checked, requireRecording: f.rec.checked,
       },
       locations: locs.map((l) => ({ label: l.label.value, atemInput: l.input.value, requiredModel: l.model.value, expectedLens: l.lens.value })),
       bodies: ips.map((b) => ({ id: b.id, ip: b.ip.value })),
@@ -356,7 +490,7 @@ async function renderSettings() {
     h('div', { class: 'section' }, h('h2', {}, 'Team standard'),
       h('div', { class: 'fields' },
         field('Allowed gamma', f.gamma), field('Shutter speed (1/x)', f.shutter),
-        field('Minimum record minutes', f.minutes), field('Approved C80 firmware', f.fw), field('Approved C50 firmware', f.fw50),
+        field('Minimum record minutes', f.minutes),
         tick('Tally must be on', f.tally), tick('Cards must be recordable', f.rec))),
     h('div', { class: 'section' }, h('h2', {}, 'Bodies'),
       h('table', {},
@@ -370,7 +504,7 @@ async function renderSettings() {
 // ---------- start ----------
 async function start() {
   const init = await call('init');
-  Object.assign(app, { profiles: init.profiles, profile: init.profile, switcher: init.switcher, bodies: init.bodies, atem: init.atem, result: init.result, waves: { ...init.waves } });
+  Object.assign(app, { profiles: init.profiles, profile: init.profile, switcher: init.switcher, bodies: init.bodies, atem: init.atem, result: init.result, waves: { ...init.waves }, feedBase: init.feed, focus: { ...init.focus } });
   $('demo').hidden = !init.demo;
   $('auto').checked = init.autoRefresh;
   $('auto-text').textContent = 'Live';
@@ -392,10 +526,10 @@ async function start() {
   document.addEventListener('pointerdown', () => { app.pointerDown = true; }, true);
   document.addEventListener('pointerup', () => {
     app.pointerDown = false;
-    setTimeout(() => { if (app.deferred && !app.pointerDown && document.activeElement?.tagName !== 'SELECT') { app.deferred = false; if (app.tab === 'dashboard') renderDashboard(); } }, 50);
+    setTimeout(() => { if (app.deferred && !app.pointerDown && document.activeElement?.tagName !== 'SELECT') { app.deferred = false; refreshLive(); } }, 50);
   }, true);
   document.addEventListener('focusout', () => {
-    setTimeout(() => { if (app.deferred && document.activeElement?.tagName !== 'SELECT') { app.deferred = false; if (app.tab === 'dashboard') renderDashboard(); } }, 0);
+    setTimeout(() => { if (app.deferred && document.activeElement?.tagName !== 'SELECT') { app.deferred = false; refreshLive(); } }, 0);
   });
 
   api.on('result', (r) => {
@@ -404,14 +538,25 @@ async function start() {
     app.switcher = r.switcher;
     renderProfile();
     renderSwitcher();
-    if (app.tab === 'dashboard') renderDashboard();
+    if (app.tab === 'dashboard' || app.tab === 'checks') refreshLive();
     else if (app.tab === 'bodies') renderBodies();
   });
   api.on('wave', ({ body, wave }) => {
     if (wave) app.waves[body] = wave; else delete app.waves[body];
     for (const d of document.querySelectorAll('[data-wfm]')) if (d.dataset.wfm === body) d.textContent = fmtWave(wave);
   });
-  api.on('atem', (a) => { app.atem = a; if (app.tab === 'dashboard') renderDashboard(); });
+  api.on('focus', ({ body, focus }) => {
+    if (focus) app.focus[body] = focus; else delete app.focus[body];
+    paintFeed(body);
+  });
+  api.on('feedstat', ({ body, fps }) => {
+    const f = app.feeds[body];
+    if (!f || !f.connected) return;
+    f.fps.textContent = fps ? `${fps} fps` : 'no frames';
+    f.fps.classList.toggle('bad', !fps);
+  });
+  document.addEventListener('visibilitychange', syncFeeds);
+  api.on('atem', (a) => { app.atem = a; refreshLive(); });
   api.on('log', () => { if (app.tab === 'log') renderLog(); });
 
   await runBusy(() => call('check', { report: false }));

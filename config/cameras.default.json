@@ -7,8 +7,7 @@
     "shutterSpeed": 50,
     "requireTally": true,
     "requireRecording": true,
-    "minRecordMinutes": 60,
-    "approvedFirmware": { "EOS C80": ["1.0.7.1"] }
+    "minRecordMinutes": 60
   },
 
   "bodies": [

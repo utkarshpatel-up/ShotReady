@@ -30,7 +30,7 @@ The installed app shows demo mode when started with `ShotReady.exe --demo`.
 | Screen | What it is for |
 | --- | --- |
 | Dashboard | READY / WARNINGS / NOT READY, a card per body with its label, PGM/PVW, camera matching |
-| Bar | Always-on-top strip with WB, ISO, aperture, lens IS and digital IS per camera. Drag to move, drag an edge to resize, toggle with the **Bar** button |
+| Bar | Always-on-top strip with WB, ISO, shutter, aperture, digital IS and waveform per camera. Drag to move, drag an edge to resize, toggle with the **Bar** button |
 | Bodies | Online status, IP, MAC, firmware and lens of every body |
 | Label sheet | Label, body, IP and lens for RCCA and operators: copy, CSV or print |
 | Workload | Total runtime per body, across all sessions, and by label |
@@ -40,18 +40,24 @@ The installed app shows demo mode when started with `ShotReady.exe --demo`.
 ## Mandatory settings
 
 Checked on every camera: Gamma flat (any Canon Log passes, any colour gamma is red, because the
-recorder must never get a colour picture), SDI output (3840x2160 whenever Constellation is selected), Sensor mode
-Full, Digital IS off, Base ISO range at or above the ISO, lens filter, Tele-converter off, Lens
-stabilization off.
+recorder must never get a colour picture), SDI output (3840x2160 whenever Constellation is selected),
+Digital IS off, Tele-converter off and Base ISO range at or above the ISO.
 
-A value the camera reports decides the row. Anything it does not report stays yellow until an
-operator presses **Confirm**, which holds for that lens on that day. The lens filter is always
-confirmed by hand, because it is physical.
+A value the camera reports decides the row. If the Base ISO cannot be compared (for example it is
+set to Auto), the row stays yellow until an operator presses **Confirm**, which holds for that lens
+on that day.
 
-The key names are under `standards.mandatory` in `cameras.json`. Most are still empty, because
-Canon's public XC spec predates the C80. Fill them in from a real `info.cgi` read-out:
+Not checked: firmware, sensor mode, lens filter and lens stabilization. The C80 reports no setting
+for sensor mode or for the lens stabilizer switch (checked with a lens attached), and the other two
+are not wanted.
 
-    "mandatory": { "sensor": [], "digitalIS": ["c.1.eis", "c.1.is"], "baseIso": ["c.1.me.baseiso"], "teleConverter": ["c.1.zoom.mode"], "lensIS": [] }
+The key names are under `standards.mandatory` in `cameras.json`:
+
+    "mandatory": { "digitalIS": ["c.1.eis"], "baseIso": ["c.1.me.baseiso"], "teleConverter": ["c.1.zoom.mode"] }
+
+The card shows Card A and Card B as **No SD Card** when a slot cannot record: red and bold when
+neither slot can, plain light text when only one is empty. The camera only says "recordable" or
+"unrecordable", so a full, locked or unformatted card also shows as No SD Card.
 
 The bar reads aperture from `c.1.me.diaphragm` (280 means F2.8). A dash on the bar means the
 camera did not report that value.
@@ -65,6 +71,29 @@ promises push for items it marks as update-notified.
 
 Each stream uses one of the camera's client connections, which RCCA also needs. A camera that
 refuses a stream is logged, retried every 30 seconds, and covered by the regular check.
+
+## Live view and focus box
+
+Each camera card on the Dashboard shows the camera's picture. The C80 has no continuous video
+stream, so ShotReady asks for single frames (`image.cgi`) with several requests overlapping: about
+10 to 18 frames a second per camera on a real C80. Pictures are only fetched for cameras on screen
+(not while another tab is open or the window is minimised) and not for offline cameras. The more
+cameras are on screen, the fewer overlapping requests each gets, so eight pictures do not swamp the
+network: 1 or 2 cameras get 4 overlapping requests each (the most the C80 handled without errors),
+3 or 4 cameras get 2, and 5 or more get 1. Set `liveViewParallel` (1 to 4) in `cameras.json` to
+force a number. A wired connection matters: over a jittery Wi-Fi link the rate drops a lot.
+
+The box over the picture is the camera's focus guide (`meta.cgi`): **green** when the camera reports
+level 2 (in focus), **red** below that, with "front focus" or "back focus" in the corner. When the
+camera sends no focus guide, no box is shown and the corner says "no focus data".
+
+On the card, **Focus** is the AF / MF switch on the lens (`c.1.lens.focus`). **Continuous AF** is
+read from the camera's focus mode (`c.1.focus`): auto means on, manual means off. The camera has no
+setting named Continuous AF, so this mapping was worked out from a camera with the lens on AF and
+Continuous AF off.
+
+The checks are on the second tab, **Checks**. Each card shows how many are red or yellow, and
+clicking it opens that camera's checks.
 
 ## Waveform
 
@@ -99,7 +128,7 @@ To change the list of bodies or labels, edit `cameras.json` with the app closed.
 
 ## Tests
 
-    npm test           # engine and service, against simulated camera servers
+    npm test           # 5 unit tests, against simulated camera servers
     npm run test:e2e   # drives the real app in demo mode
 
 `node test/packaged.mjs` checks the built app in live mode after `npm run dist:win`.
