@@ -1,6 +1,7 @@
 // Simulated camera bodies for demo mode and tests. Key names come from the v0.2
 // prototype. Values are representative, not a copy of a real camera's dump.
 import { createServer } from 'node:http';
+import { encodeMsgpack } from '../core/msgpack.mjs';
 
 export function goodCamera(over = {}) {
   const base = {
@@ -12,7 +13,7 @@ export function goodCamera(over = {}) {
     'c.1.wb': 'kelvin', 'c.1.wb.kelvin': '5600', 'c.1.wb.kelvin.min': '2000', 'c.1.wb.kelvin.max': '15000',
     'c.1.me.iso': '800', 'c.1.me.iso.list': '160,200,400,800,1600,3200,6400,12800,25600',
     'c.1.me.shutter': '50', 'c.1.me.shutter.mode': 'speed', 'c.1.nd.filter': '2',
-    'sim.sensor': 'full', 'c.1.eis': 'off', 'c.1.me.baseiso': '3200', 'c.1.zoom.mode': 'off', 'c.1.zoom.mag': '150', 'sim.lensis': 'off', 'c.1.me.diaphragm': '280',
+    'c.1.focus': 'manual', 'c.1.lens.focus': 'af', 'c.1.focus.detect': 'ppl_catch', 'c.1.eis': 'off', 'c.1.me.baseiso': '3200', 'c.1.zoom.mode': 'off', 'c.1.zoom.mag': '150', 'c.1.me.diaphragm': '280',
     'c.1.knee': 'on', 'c.1.knee.slope': '0', 'c.1.blacklevel': '0',
     'f.tally': 'on', 'f.tally.mode': 'program', 'f.rec.format.media1': 'xfavc',
     'f.rec.media1.status': 'recordable', 'f.rec.media1.remainingtime': '180', 'f.rec.media1.videoinfo': '3840x2160:25000:P',
@@ -24,7 +25,7 @@ export function goodCamera(over = {}) {
 }
 
 // The simulator reports every mandatory setting so demos and tests cover the read path.
-export const SIM_MANDATORY = { sensor: ['sim.sensor'], digitalIS: ['c.1.eis'], baseIso: ['c.1.me.baseiso'], teleConverter: ['c.1.zoom.mode'], lensIS: ['sim.lensis'] };
+export const SIM_MANDATORY = { digitalIS: ['c.1.eis'], baseIso: ['c.1.me.baseiso'], teleConverter: ['c.1.zoom.mode'] };
 
 export const toInfoText = (info) => Object.entries(info).map(([k, v]) => `${k}:=${v}`).join('\n') + '\n';
 
@@ -35,13 +36,13 @@ const mac = (n) => `00:00:85:00:00:${String(n).padStart(2, '0')}`;
 export function demoBodies() {
   return [
     { id: 'C80-1', info: goodCamera({ 's.hardware.address': mac(1) }) },
-    { id: 'C80-2', info: goodCamera({ 's.hardware.address': mac(2), 'c.1.lens.name': 'RF24-70mm F2 L IS USM', 'sim.sensor': 's35', 'c.1.me.diaphragm': '200' }) },
+    { id: 'C80-2', info: goodCamera({ 's.hardware.address': mac(2), 'c.1.lens.name': 'RF24-70mm F2 L IS USM', 'c.1.me.diaphragm': '200' }) },
     { id: 'C80-3', info: goodCamera({ 's.hardware.address': mac(3), 'c.1.gamma': 'canon709_bt709', 'c.1.lens.name': 'RF24-105mm F4 L IS USM' }) },
     { id: 'C80-4', info: goodCamera({ 's.hardware.address': mac(4), 'f.rec.media1.status': 'unrecordable', 'f.rec.media1.remainingtime': '0', 'f.rec.media2.status': 'unrecordable', 'f.rec.media2.remainingtime': '0', 'f.timecode.frame': 'df' }) },
-    { id: 'C80-5', info: goodCamera({ 's.hardware.address': mac(5), 'c.1.wb.kelvin': '4300', 'c.1.me.iso': '6400', 'c.1.me.diaphragm': '400' }) },
-    { id: 'C80-6', info: goodCamera({ 's.hardware.address': mac(6), 'f.rec.media1.remainingtime': '35', 'f.rec.media2.remainingtime': '0', 's.firmware': '1.0.6.0', 'c.1.eis': 'on' }) },
+    { id: 'C80-5', info: goodCamera({ 's.hardware.address': mac(5), 'c.1.wb.kelvin': '4300', 'f.rec.media2.status': 'unrecordable', 'f.rec.media2.remainingtime': '0', 'c.1.focus': 'auto', 'c.1.lens.focus': 'mf', 'c.1.focus.detect': 'off', 'c.1.me.iso': '6400', 'c.1.me.diaphragm': '400' }) },
+    { id: 'C80-6', info: goodCamera({ 's.hardware.address': mac(6), 'f.rec.media1.status': 'unrecordable', 'f.rec.media1.remainingtime': '0', 'f.rec.media2.remainingtime': '35', 's.firmware': '1.0.6.0', 'c.1.eis': 'on' }) },
     { id: 'C80-7', offline: true, info: goodCamera({ 's.hardware.address': mac(7) }) },
-    { id: 'C50-8', info: goodCamera({ 's.hardware': 'EOS C50', 's.firmware': '1.0.2.1', 's.hardware.address': mac(8), 'c.1.lens.name': 'RF28-70mm F2 L USM', 'f.tally': 'off', 'c.1.zoom.mode': 'mag', 'c.1.zoom.mag': '200', 'sim.lensis': 'on', 'c.1.gamma.list': 'clog2_cgamut,clog3_cgamut,canon709_bt709' }) },
+    { id: 'C50-8', info: goodCamera({ 's.hardware': 'EOS C50', 's.firmware': '1.0.2.1', 's.hardware.address': mac(8), 'c.1.lens.name': 'RF28-70mm F2 L USM', 'f.tally': 'off', 'c.1.zoom.mode': 'mag', 'c.1.zoom.mag': '200', 'c.1.gamma.list': 'clog2_cgamut,clog3_cgamut,canon709_bt709' }) },
   ];
 }
 
@@ -57,13 +58,24 @@ export async function startSimulator(bodies, infoPath = '/-wvhttp-01-/info.cgi')
   const live = {};
   for (const b of bodies) {
     const entry = {
-      ...b, requests: 0, methods: [], subs: new Set(),
+      ...b, requests: 0, methods: [], subs: new Set(), metaSubs: new Set(), frameDelayMs: 0, frames: 0, focus: b.focus || null,
       // Changes settings the way an operator would, and pushes them to open streams.
       update(items) {
         entry.info = { ...entry.info, ...items };
         for (const res of entry.subs) writePart(res, items);
       },
-      dropStreams() { for (const res of entry.subs) res.destroy(); entry.subs.clear(); },
+      dropStreams() {
+        for (const res of entry.subs) res.destroy();
+        entry.subs.clear();
+        for (const res of entry.metaSubs) res.destroy();
+        entry.metaSubs.clear();
+      },
+      // What the camera's focus guide reports. null means no focus guide (auto focus).
+      metaDoc: () => ({ version: '3.0.0', timestamp: '1.000', realtime: '1.000', detect: [], fguide: entry.focus ? [entry.focus] : [] }),
+      setFocus(focus) {
+        entry.focus = focus;
+        for (const res of entry.metaSubs) res.write(encodeMsgpack(entry.metaDoc()));
+      },
     };
     live[b.id] = entry;
     const srv = createServer((req, res) => {
@@ -72,8 +84,24 @@ export async function startSimulator(bodies, infoPath = '/-wvhttp-01-/info.cgi')
       if (entry.offline) { req.socket.destroy(); return; }
       const [path, query] = req.url.split('?');
       if (path === infoPath.replace(/info\.cgi$/, 'image.cgi') && entry.frame) {
-        res.writeHead(200, { 'content-type': 'image/jpeg', 'livescope-status': '0' });
-        res.end(entry.frame);
+        entry.frames++;
+        const jpeg = typeof entry.frame === 'function' ? entry.frame() : entry.frame;
+        // A real camera takes about 125 ms per frame, which is why requests overlap.
+        setTimeout(() => {
+          if (res.destroyed) return;
+          res.writeHead(200, { 'content-type': 'image/jpeg', 'livescope-status': '0' });
+          res.end(jpeg);
+        }, typeof entry.frameDelayMs === 'function' ? entry.frameDelayMs(entry.frames) : entry.frameDelayMs);
+        return;
+      }
+      if (path === infoPath.replace(/info\.cgi$/, 'meta.cgi')) {
+        if (entry.noMeta) { res.writeHead(200, { 'content-type': 'text/plain', 'livescope-status': '401' }); res.end(); return; }
+        res.writeHead(200, { 'content-type': 'application/x-msgpack', 'livescope-status': '0' });
+        if (/type=stream/.test(query || '')) {
+          entry.metaSubs.add(res);
+          res.on('close', () => entry.metaSubs.delete(res));
+          res.write(encodeMsgpack(entry.metaDoc()));
+        } else res.end(encodeMsgpack(entry.metaDoc()));
         return;
       }
       if (path !== infoPath) { res.writeHead(404); res.end(); return; }
@@ -101,7 +129,7 @@ export async function startSimulator(bodies, infoPath = '/-wvhttp-01-/info.cgi')
     config: (extra = {}) => ({
       infoPath,
       auth: { user: '', pass: '' },
-      standards: { approvedFirmware: { 'EOS C80': ['1.0.7.1'] }, mandatory: SIM_MANDATORY },
+      standards: { mandatory: SIM_MANDATORY },
       bodies: bodies.map((b) => ({ id: b.id, model: b.info['s.hardware'], ip: live[b.id].ip })),
       locations: bodies.map((_, i) => ({ label: labelName(i), atemInput: i + 1 })),
       ...extra,

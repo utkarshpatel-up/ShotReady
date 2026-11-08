@@ -40,7 +40,6 @@ function cell(l) {
     value('iso', 'ISO', e.iso, e.isoOver),
     value('shutter', 'Shutter', e.shutter, e.shutterBad),
     value('aperture', 'Iris', e.aperture),
-    value('lensIS', 'Lens IS', e.lensIS, isOn(e.lensIS)),
     value('digitalIS', 'Dig IS', e.digitalIS, isOn(e.digitalIS)),
   );
   const wfm = value('wfm', 'WFM', fmtWave(waves[l.body]));

@@ -17,18 +17,15 @@ export const DEFAULT_STANDARDS = {
   requireTally: true,
   requireRecording: true,
   minRecordMinutes: 60,
-  approvedFirmware: {},
   consistencyKeys: ['gamma', 'wbMode', 'wbKelvin', 'iso', 'shutter', 'output', 'recCodec'],
   // Camera key names for the mandatory settings. An empty list, or a key this camera does not
   // report, means the operator confirms the setting by hand: it never passes on a guess.
   // c.1.eis and c.1.me.baseiso were read from a real C80 (firmware 1.0.6.1). c.1.is is the same
   // setting on older models. Not yet read from a C50.
   mandatory: {
-    sensor: [],
     digitalIS: ['c.1.eis', 'c.1.is'],
     baseIso: ['c.1.me.baseiso'],
     teleConverter: ['c.1.zoom.mode'], // XC spec: 'mag' means digital teleconverter
-    lensIS: [],
   },
 };
 
@@ -74,6 +71,9 @@ export function summarize(info) {
     shutterMode: info['c.1.me.shutter.mode'] || '?',
     nd: info['c.1.nd.filter'] || '?',
     tally: info['f.tally'] || '?',
+    focusMode: info['c.1.focus'] || '',
+    lensFocus: info['c.1.lens.focus'] || '',
+    detect: info['c.1.focus.detect'] || '',
     recCodec: info['f.rec.format.media1'] || '?',
     media: [1, 2].map((n) => ({
       slot: n,
@@ -97,8 +97,6 @@ export function checkCamera(s, loc, profile, std) {
   const r = [];
   const add = (status, check, detail) => r.push({ status, check, detail });
 
-  const approved = std.approvedFirmware?.[s.model];
-  if (approved && !approved.includes(s.firmware)) add('yellow', 'Firmware', `${s.firmware} (approved: ${approved.join(', ')})`);
 
   if (loc?.requiredModel && !s.model.includes(loc.requiredModel)) add('red', 'Model', `${s.model} — label needs ${loc.requiredModel}`);
   if (loc?.expectedLens && !s.lens.toLowerCase().includes(loc.expectedLens.toLowerCase())) {
@@ -150,10 +148,8 @@ export function checkCamera(s, loc, profile, std) {
 const onOff = (v) => (/^off$/i.test(v) ? 'OFF' : 'ON');
 const OFF = { want: (v) => /^off$/i.test(v), wantText: 'OFF', show: onOff };
 const MANDATORY = [
-  { id: 'sensor', check: 'Sensor mode', ask: 'Check it is Full, never Super 35', want: (v) => /^(full|ff)/i.test(v), wantText: 'Full' },
   { id: 'digitalIS', check: 'Digital IS', ask: 'Check it is OFF', ...OFF },
   { id: 'teleConverter', check: 'Tele-converter', ask: 'Check it is OFF', ...OFF, describe: (info) => `ON at ${Number(info['c.1.zoom.mag']) / 100}x` },
-  { id: 'lensIS', check: 'Lens stabilization', ask: 'Check it is OFF', ...OFF },
 ];
 const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
 const baseIsoOf = (info, keys) => {
@@ -190,8 +186,6 @@ export function mandatoryChecks(info, s, std, confirmed = {}, now = Date.now()) 
   } else {
     manual('baseIso', 'Base ISO range', `Cannot compare from the camera. Check ISO ${s.iso} is not above the Base ISO range`);
   }
-  // Physical: no camera setting can report this.
-  manual('lensFilter', 'Lens filter', 'Check no filter is causing a focus or sharpness issue');
   return rows;
 }
 
@@ -214,7 +208,6 @@ export function essentials(info, s, std) {
     shutter: s.shutterMode === 'speed' ? `1/${s.shutter}` : s.shutterMode,
     shutterBad: s.shutterMode !== 'speed' || Number(s.shutter) !== Number({ ...DEFAULT_STANDARDS, ...std }.shutterSpeed),
     aperture: !raw ? null : n >= 100 ? `F${n / 100}` : n > 0 ? `F${n}` : raw,
-    lensIS: pick('lensIS'),
     digitalIS: pick('digitalIS'),
   };
 }
