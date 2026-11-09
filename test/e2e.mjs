@@ -64,7 +64,7 @@ try {
   assert.match(await card('C80-2').locator('.fchip').textContent(), /IN FOCUS/);
   assert.match(await card('C80-3').locator('.fchip').textContent(), /OUT OF FOCUS · front focus/);
   assert.match(await card('C80-4').locator('.fchip').textContent(), /back focus/);
-  assert.match(await card('C80-5').locator('.fchip').textContent(), /no focus data/);
+  assert.match(await card('C80-5').locator('.fchip').textContent(), /Focus not detected/);
   const was = await box('C80-1').getAttribute('class');
   await win.waitForFunction((w) => document.querySelector('.card[data-body="C80-1"] .fbox').className !== w, was, { timeout: 6000 });
   ok('focus box: green in focus, red out of focus, none in auto focus, and it changes live');
@@ -81,14 +81,58 @@ try {
   assert.match(await panel('C80-7').textContent(), /not answering/);
   for (const gone of ['Firmware', 'Sensor mode', 'Lens filter', 'Lens stabilization']) assert.doesNotMatch(await panel('C80-6').textContent(), new RegExp(gone), `${gone} is gone`);
   await win.screenshot({ path: join(shots, '2-checks.png') });
+  assert.doesNotMatch(await panel('C80-2').textContent(), /Hardware|Compare|Save as reference/);
   ok('checks tab: every check is there, and the removed checks are gone');
 
-  // 4. Pictures are only fetched while the dashboard is showing.
-  assert.equal(await win.locator('.card img').count(), 0, 'cards are not on screen');
-  await win.waitForFunction(() => Object.keys(window).length > 0); // page still alive
+  // 4. Pictures keep running on other tabs, so they are there the moment the Dashboard returns.
+  await sleep(1500);
   await tab('Dashboard');
-  await win.waitForFunction(() => [...document.querySelectorAll('.card:not(.offline) img')].every((i) => i.naturalWidth > 0), null, { timeout: 10000 });
-  ok('leaving the dashboard stops the pictures and coming back restarts them');
+  await win.waitForSelector('.card img');
+  assert.equal(await win.locator('.card:not(.offline) img').evaluateAll((l) => l.every((i) => i.naturalWidth > 0)), true, 'no wait after switching tabs');
+  assert.match(await card('C80-2').locator('.ffps').textContent(), /\d+ fps/);
+  ok('pictures keep running while another tab is open');
+
+  // Cards can be moved, and stay moved.
+  const head = await card('C80-3').locator('.name').boundingBox();
+  const target = await card('C80-1').locator('.name').boundingBox();
+  await win.mouse.move(head.x + 5, head.y + 5);
+  await win.mouse.down();
+  await win.mouse.move(target.x + 20, target.y + 5, { steps: 8 });
+  await win.mouse.up();
+  await sleep(300);
+  const names = () => win.locator('.card .name').allTextContents();
+  assert.equal((await names())[0], 'C80-3', 'dragged to the front');
+  await sleep(3500); // a screen update rebuilds the cards
+  assert.equal((await names())[0], 'C80-3', 'the new order survives a screen update');
+  ok('camera cards can be dragged and stay where they are put');
+
+  // Adjust one camera from its card.
+  await card('C80-1').locator('.adjust-btn').click();
+  await win.waitForSelector('.card[data-body="C80-1"] .adjust select');
+  assert.deepEqual(await card('C80-1').locator('.adjust label').evaluateAll((l) => l.map((x) => x.firstChild.textContent)), ['Shutter', 'White balance', 'Kelvin', 'Tint', 'Base ISO', 'ISO', 'ND', 'Iris', 'AF frame', 'OSD']);
+  await card('C80-1').locator('select[aria-label="ISO on C80-1"]').selectOption('1600');
+  await win.waitForFunction(() => /1600/.test(document.querySelector('.card[data-body="C80-1"] .facts').textContent), null, { timeout: 8000 });
+  await card('C80-1').locator('select[aria-label="Shutter on C80-1"]').selectOption('60');
+  await win.waitForFunction(() => document.querySelector('.card[data-body="C80-1"] .facts').textContent.includes('1/60'), null, { timeout: 8000 });
+  await win.screenshot({ path: join(shots, '5-adjust.png') });
+  await card('C80-1').locator('.adjust-btn').click();
+  await win.waitForFunction(() => !document.querySelector('.card[data-body="C80-1"] .adjust'), null, { timeout: 5000 });
+  ok('Adjust changes shutter and ISO on a camera and closes again');
+
+  // Set all cameras.
+  await tab('Checks');
+  await win.locator('#wb-btn').click();
+  await win.locator('.dialog input[aria-label="White balance in Kelvin"]').fill('5600');
+  await win.waitForFunction(() => /Kelvin 4300/.test(document.querySelector('.dialog').textContent), null, { timeout: 8000 });
+  assert.match(await win.locator('.dialog').textContent(), /Kelvin 4300 → 5600/);
+  assert.match(await win.locator('.dialog').textContent(), /Not reachable.*C80-7/);
+  await win.screenshot({ path: join(shots, '4-match.png') });
+  await win.locator('.dialog button', { hasText: /^Send WB/ }).click();
+  await win.waitForFunction(() => /Done\./.test(document.querySelector('.dialog').textContent), null, { timeout: 10000 });
+  await win.locator('.dialog button', { hasText: 'Close' }).click();
+  await tab('Dashboard');
+  await win.waitForFunction(() => document.querySelector('.card[data-body="C80-5"] .facts').textContent.includes('5600 K'), null, { timeout: 10000 });
+  ok('Send WB shows what will change and applies it');
 
   // 5. The always-on-top bar still works.
   const bar = await pageOf('bar.html');

@@ -30,7 +30,8 @@
       "package.json"
     ],
     "asarUnpack": [
-      "node_modules/@julusian/freetype2/**/*"
+      "node_modules/@julusian/freetype2/**/*",
+      "src/core/**/*"
     ],
     "win": {
       "target": [

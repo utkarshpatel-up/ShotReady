@@ -4,8 +4,8 @@ Pre-mix camera verification and body tracking for Canon EOS C80 / C50 cameras wi
 Blackmagic ATEM 2 M/E switchers. It sits beside Canon's RCCA: RCCA stays the operators'
 control surface, ShotReady confirms everything is right before mixing starts.
 
-**Read-only.** ShotReady only sends HTTP GET requests to cameras and only reads from the ATEM.
-Writing settings stays off until Canon's XC documentation confirms which keys can be written.
+ShotReady only reads from the ATEM. It writes to cameras only for tally lamps and when you ask it
+to, with **Adjust** on a camera's card or the all-camera buttons on the Checks tab.
 
 ## Run it
 
@@ -36,6 +36,50 @@ The installed app shows demo mode when started with `ShotReady.exe --demo`.
 | Workload | Total runtime per body, across all sessions, and by label |
 | Log | Swaps, verdict changes, lens changes, bodies dropping out |
 | Settings | Labels, ATEM, login, team standard, body IPs |
+
+## Tally
+
+With an ATEM connected, each camera's tally lamp follows the switcher: `program` when its input is
+on air on M/E 1 (including keyers and anything fed in from another M/E), `preview` when it is on
+preview, off otherwise. The label's **ATEM input** in Settings says which input is which; with none
+set, Cam-01 is input 1, and so on. Set `tallyFromAtem` to `false` in `cameras.json` to turn this off.
+
+## Record
+
+**REC** on a camera's card starts that camera recording. It is greyed out when the camera has no SD
+Card it can record to. While recording the button turns red; stopping takes a second click within
+3 seconds. The button shows what the camera reports, so it only turns red once the camera is recording.
+
+## Adjust a camera
+
+**Adjust** on a camera's card opens dropdowns for shutter, white balance, Kelvin, tint, Base ISO, ISO, ND
+and iris, plus **Closer** and **Further** buttons you hold to push focus. It also turns the camera's on-screen display on or off; it cannot be turned on for a live camera. They list only the values that camera offers right now, and a change goes to the camera as
+soon as it is picked. A setting that does not apply in the camera's current mode is not shown.
+
+## Focus
+
+Click the picture to put the camera's AF frame there and focus on it. On a camera that is on program
+the box moves but focus waits for **1-Shot AF**. The box moves when the camera reports the new position. Set the frame type under **AF frame** in Adjust;
+a frame on Auto cannot be placed.
+
+## Keyboard
+
+With the ShotReady window in front, **W** raises and **S** lowers ISO by one step. Choose who they
+are for at the top of the window:
+
+- **Mixer**: the camera the switcher has on preview (M/E 1 first). A camera also on program is left alone.
+- **Assistant**: the camera last clicked on, which gets a blue outline. A camera on program cannot be
+  selected or changed in this mode, and nothing can be changed while the ATEM is disconnected.
+
+## All-camera buttons
+
+At the top of the Checks tab:
+
+- **Set default settings on all cameras** sends the team's gamma, shutter, ND 0, Tele-converter OFF and
+  Digital IS OFF to every reachable camera. SDI output can only be set on the camera, so it is listed if wrong.
+- **Send WB to all cameras** sends the Kelvin and tint you type.
+
+Each shows what will change first, and Send always sends every setting, even one a camera already has.
 
 ## Updating
 
@@ -71,8 +115,9 @@ The key names are under `standards.mandatory` in `cameras.json`:
 
     "mandatory": { "digitalIS": ["c.1.eis"], "baseIso": ["c.1.me.baseiso"], "teleConverter": ["c.1.zoom.mode"] }
 
-The card shows Card A and Card B as **No SD Card** when a slot cannot record: red and bold when
-neither slot can, plain light text when only one is empty. The camera only says "recordable" or
+The card has one **SD Card** field for both slots. A slot's letter (A or B) is green when it has a
+usable card, with its minutes left. **No SD Card** is red and bold when neither slot can record, and
+plain light text for the empty slot when only one is empty. The camera only says "recordable" or
 "unrecordable", so a full, locked or unformatted card also shows as No SD Card.
 
 The bar reads aperture from `c.1.me.diaphragm` (280 means F2.8). A dash on the bar means the
@@ -101,7 +146,7 @@ force a number. A wired connection matters: over a jittery Wi-Fi link the rate d
 
 The box over the picture is the camera's focus guide (`meta.cgi`): **green** when the camera reports
 level 2 (in focus), **red** below that, with "front focus" or "back focus" in the corner. When the
-camera sends no focus guide, no box is shown and the corner says "no focus data".
+camera sends no focus guide, no box is shown and the corner says "Focus not detected".
 
 On the card, **Focus** is the AF / MF switch on the lens (`c.1.lens.focus`). **Continuous AF** is
 read from the camera's focus mode (`c.1.focus`): auto means on, manual means off. The camera has no

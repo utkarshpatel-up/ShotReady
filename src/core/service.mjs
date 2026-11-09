@@ -5,14 +5,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, appendF
 import { join } from 'node:path';
 import {
   PROFILES, DEFAULT_STANDARDS, OLD_DEFAULT_GAMMA, parseInfo, summarize, checkCamera, extractCopySettings, diffAgainstRef,
-  bodyIdentity, matchCameras, verdictOf, mandatoryChecks, essentials, shortLens,
+  bodyIdentity, matchCameras, verdictOf, mandatoryChecks, essentials, shortLens, defaultsPlan, wbPlan, validateOnBody, cameraControls, recordState, focusDrive, focusFrame, checkFixes, fmtVideo,
 } from './engine.mjs';
 import { httpGet } from './http.mjs';
 import { CameraStream } from './stream.mjs';
 import { lumaStats } from './waveform.mjs';
-import { FrameSource } from './frames.mjs';
 import { FocusStream, normalizeFocus } from './focus.mjs';
-import { FeedServer } from './feedserver.mjs';
+import { CameraThread } from './camera-thread.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const HOST_RE = /^[A-Za-z0-9.-]+(:\d{1,5})?$/;
@@ -82,8 +81,11 @@ export class ShotReadyService extends EventEmitter {
     this.streamRefused = {};
     this.waves = {};
     // Live view: pictures and focus for the cameras someone is watching.
-    this.feed = new FeedServer({ onViewers: (id, n) => this.onViewers(id, n) });
-    this.frames = {};
+    this.cams = {};           // one video thread per camera
+    this.lampSent = {};       // what each camera's tally lamp was last set to
+    this.lampWant = {};
+    this.lampBusy = {};
+    this.lampFailed = {};
     this.focusStreams = {};
     this.focus = {};
     this.viewers = {};
@@ -125,12 +127,18 @@ export class ShotReadyService extends EventEmitter {
     this.profile = PROFILES[this.state.profile] ? this.state.profile : '4K25';
     if (!SWITCHERS[this.state.switcher]) this.state.switcher = 'constellation';
     // Installs that still have the original placeholder names move to Cam-01 ... Cam-08.
+    const CAM8 = Array.from({ length: 8 }, (_, i) => `Cam-0${i + 1}`).join();
     if (this.cfg.locations.map((l) => l.label).join() === DEFAULT_LABELS.join()) {
       const next = DEFAULT_LABELS.map((_, i) => `Cam-0${i + 1}`);
       this.renameLabels(DEFAULT_LABELS, next);
       this.cfg.locations.forEach((l, i) => { l.label = next[i]; });
       this.saveConfig();
       this.saveState();
+    }
+    // Installs with the standard eight labels gain Cam-09 and Cam-10.
+    if (this.cfg.locations.map((l) => l.label).join() === CAM8) {
+      this.cfg.locations.push({ label: 'Cam-09' }, { label: 'Cam-10' });
+      this.saveConfig();
     }
     this.events = [];
     if (existsSync(this.logPath)) {
@@ -241,6 +249,13 @@ export class ShotReadyService extends EventEmitter {
       return this.readBody(b, { dupCheck: due });
     }));
     this.reads = Object.fromEntries(reads.map((r) => [r.body.id, r]));
+    // If a lamp was changed by something else, set it again.
+    for (const r of reads) {
+      const sent = this.lampSent[r.body.id];
+      if (!sent || !r.info) continue;
+      const ok = sent === 'off' ? r.info['f.tally'] === 'off' : r.info['f.tally'] === 'on' && r.info['f.tally.mode'] === sent;
+      if (!ok) delete this.lampSent[r.body.id];
+    }
     return this.#evaluate({ report });
   }
 
@@ -269,14 +284,15 @@ export class ShotReadyService extends EventEmitter {
     if (!Object.keys(this.state.assignments).length) global.push({ status: 'red', check: 'No cameras', detail: 'No body is assigned to any label' });
     count(global);
 
+    // While the ATEM drives the lamps, a lamp being off just means the camera is not on air.
+    const std = this.tallyDriven(atem) ? { ...this.std, requireTally: false } : this.std;
     const labels = [];
     for (const loc of this.cfg.locations) {
       const id = this.state.assignments[loc.label]?.body;
       const tally = this.atemTally(loc, atem);
       if (!id || !byId[id]) {
-        const results = [{ status: 'yellow', check: 'No body', detail: 'Nothing assigned to this label' }];
-        count(results);
-        labels.push({ label: loc.label, body: null, results, tally });
+        // There can be more labels than cameras, so an empty label is not a problem.
+        labels.push({ label: loc.label, body: null, results: [], tally });
         continue;
       }
       const rb = byId[id];
@@ -290,7 +306,7 @@ export class ShotReadyService extends EventEmitter {
       let diffCount = 0;
       const ref = this.state.labelRef[loc.label];
       if (!rb.error) {
-        results.push(...checkCamera(rb.summary, loc, checkProfile, this.std));
+        results.push(...checkCamera(rb.summary, loc, checkProfile, std));
         results.push(...mandatoryChecks(rb.info, rb.summary, this.std, known.confirmed));
         if (ref) diffCount = diffAgainstRef(ref, rb.info).length;
         if (ref && ref.fromBody !== id && diffCount) results.push({ status: 'yellow', check: 'vs earlier camera', detail: `${diffCount} setting(s) differ from ${ref.fromBody}`, action: 'diff' });
@@ -300,6 +316,10 @@ export class ShotReadyService extends EventEmitter {
         label: loc.label, body: id, ip: rb.body.ip, online: !rb.error, summary: rb.summary || null, results, tally,
         ref: ref ? { fromBody: ref.fromBody, time: ref.time } : null, diffCount,
         essentials: rb.error ? null : essentials(rb.info, rb.summary, this.std),
+        controls: rb.error ? null : cameraControls(rb.info),
+        record: rb.error ? null : recordState(rb.info),
+        focusDrive: rb.error ? null : focusDrive(rb.info),
+        focusFrame: rb.error ? null : focusFrame(rb.info),
       });
     }
 
@@ -310,8 +330,15 @@ export class ShotReadyService extends EventEmitter {
       count(results);
       // Shown on the card so a spare can be readied, but not counted until it is on a label.
       const known = this.state.bodies[rb.body.id] || {};
-      const checks = rb.error ? [] : [...checkCamera(rb.summary, {}, checkProfile, this.std), ...mandatoryChecks(rb.info, rb.summary, this.std, known.confirmed)];
-      spares.push({ body: rb.body.id, ip: rb.body.ip, online: !rb.error, summary: rb.summary || null, results, checks, spare: true });
+      const checks = rb.error ? [] : [...checkCamera(rb.summary, {}, checkProfile, std), ...mandatoryChecks(rb.info, rb.summary, this.std, known.confirmed)];
+      spares.push({ body: rb.body.id, ip: rb.body.ip, online: !rb.error, summary: rb.summary || null, results, checks, spare: true, controls: rb.error ? null : cameraControls(rb.info), record: rb.error ? null : recordState(rb.info), focusDrive: rb.error ? null : focusDrive(rb.info), focusFrame: rb.error ? null : focusFrame(rb.info) });
+    }
+
+    for (const c of [...labels, ...spares]) {
+      const info = byId[c.body]?.info;
+      if (!info || !c.online) continue;
+      const fixes = checkFixes(info, this.std);
+      for (const r of [...c.results, ...(c.checks || [])]) if (fixes[r.check]) r.fix = fixes[r.check].label;
     }
 
     const live = labels.filter((l) => l.online).map((l) => ({ label: l.label, summary: l.summary }));
@@ -342,6 +369,7 @@ export class ShotReadyService extends EventEmitter {
     if (report) result.reportPath = this.writeReport(result);
     this.lastResult = result;
     this.emit('result', result);
+    this.syncTally();
     return result;
   }
 
@@ -350,13 +378,43 @@ export class ShotReadyService extends EventEmitter {
   // it catches a network that dies silently, and any setting the camera does not push.
   startLive() {
     this.liveEnabled = true;
-    this.feedReady = this.feed.start().catch((e) => { this.log('red', `Live view could not start: ${e.message}`); throw e; });
-    this.feedReady.catch(() => {});
+    this.startCameras();
     this.startStreams();
     this.startTimer();
   }
 
+  // A full read waits for every camera, and an unreachable one holds it up for seconds. These
+  // settings are read on their own, camera by camera, so a change shows within about a second.
+  startFastReads() {
+    clearInterval(this.fastTimer);
+    this.fastTimer = setInterval(() => this.#fastRead(), 1000);
+    this.fastTimer.unref?.();
+  }
+
+  #fastRead() {
+    const m = { ...DEFAULT_STANDARDS.mandatory, ...this.std.mandatory };
+    const auth = this.authForRequests();
+    for (const body of this.cfg.bodies) {
+      const info = this.reads[body.id]?.info;
+      const items = [...(m.digitalIS || []), ...(m.teleConverter || [])].filter((k) => info && k in info);
+      if (!items.length || this.fastBusy[body.id]) continue;
+      this.fastBusy[body.id] = true;
+      const query = new URLSearchParams(items.map((k) => ['item', k]));
+      httpGet(`http://${body.ip}${this.cfg.infoPath}?${query}`, auth, 900)
+        .then(async (res) => {
+          if (!res.ok) { await res.arrayBuffer(); return; }
+          const got = parseInfo(await res.text());
+          delete got.timestamp;
+          delete got.realtime;
+          if (this.reads[body.id]?.info) this.onPushed(body, got);
+        })
+        .catch(() => {}) // The full read reports a camera that has gone away.
+        .finally(() => { this.fastBusy[body.id] = false; });
+    }
+  }
+
   startStreams() {
+    this.startFastReads();
     this.stopStreams();
     if (!this.liveEnabled || !this.state.autoRefresh) return;
     for (const body of this.cfg.bodies) {
@@ -385,26 +443,32 @@ export class ShotReadyService extends EventEmitter {
   // ---------- live view ----------
   // Every camera has a frame reader. It runs slowly in the background (just enough for the
   // waveform) and fast while a card is on screen, which the feed server tells us about.
-  startFrames() {
-    const path = this.cfg.infoPath.replace(/info\.cgi$/, 'image.cgi');
+  startCameras() {
+    if (Object.keys(this.cams).length) return;
     for (const body of this.cfg.bodies) {
-      this.frames[body.id] = new FrameSource(`http://${body.ip}${path}`, () => this.authForRequests(), {
-        onFrame: (jpeg) => this.onFrame(body.id, jpeg),
-        onState: (state) => { if (state === 'down') this.setWave(body.id, null); },
+      this.cams[body.id] = new CameraThread(body.id, { url: this.frameUrl(body), auth: this.authForRequests() }, {
+        viewers: (n) => this.onViewers(body.id, n),
+        state: (state) => { if (state === 'down') this.setWave(body.id, null); },
+        wave: (jpeg) => this.measureWave(body.id, jpeg),
+        stats: (frames) => { if (this.viewers[body.id] > 0) this.emit('feedstat', { body: body.id, fps: frames }); },
+        failed: (message) => this.log('red', `${body.id}: video thread stopped (${message})`),
       });
     }
+    this.feedReady = Promise.all(Object.values(this.cams).map((c) => c.ready));
+    this.feedReady.catch((e) => this.log('red', `Live view could not start: ${e.message}`));
+  }
+
+  frameUrl(body) { return `http://${body.ip}${this.cfg.infoPath.replace(/info\.cgi$/, 'image.cgi')}`; }
+
+  startFrames() {
+    for (const body of this.cfg.bodies) this.cams[body.id]?.setSource(this.frameUrl(body), this.authForRequests());
     this.framesOn = true;
     this.applyViewing();
-    for (const src of Object.values(this.frames)) src.start();
-    this.statTimer = setInterval(() => this.emitFeedStats(), 1000);
-    this.statTimer.unref?.();
   }
 
   stopFrames() {
     this.framesOn = false;
-    clearInterval(this.statTimer);
-    for (const src of Object.values(this.frames)) src.stop();
-    this.frames = {};
+    for (const cam of Object.values(this.cams)) cam.setMode({ parallel: 0, intervalMs: 0, waveGap: 0 });
     for (const id of Object.keys(this.focusStreams)) this.stopFocus(id);
   }
 
@@ -414,7 +478,7 @@ export class ShotReadyService extends EventEmitter {
   }
 
   // The more cameras are watched, the fewer overlapping requests each one gets, so 8 live
-  // pictures do not swamp the network or the cameras. liveViewParallel (1 to 3) overrides it.
+  // pictures do not swamp the network or the cameras. liveViewParallel (1 to 4) overrides it.
   applyViewing() {
     if (!this.framesOn) return;
     const watched = Object.keys(this.viewers).filter((id) => this.viewers[id] > 0);
@@ -422,8 +486,11 @@ export class ShotReadyService extends EventEmitter {
     // 8 overlapping requests to share between the watched cameras, at most 4 each (more than 4
     // made the C80 return errors): 1 or 2 cameras get 4, 3 or 4 get 2, 5 or more get 1.
     const parallel = fixed >= 1 && fixed <= 4 ? fixed : Math.max(1, Math.min(4, Math.floor(8 / Math.max(1, watched.length))));
-    const idle = this.opts.decodeJpeg && this.cfg.waveformMs > 0 ? { parallel: 1, intervalMs: this.cfg.waveformMs } : { parallel: 0, intervalMs: 0 };
-    for (const [id, src] of Object.entries(this.frames)) src.setMode(this.viewers[id] > 0 ? { parallel, intervalMs: 0 } : idle);
+    const measure = this.opts.decodeJpeg && this.cfg.waveformMs > 0;
+    const idle = measure ? { parallel: 1, intervalMs: this.cfg.waveformMs, waveGap: this.cfg.waveformMs } : { parallel: 0, intervalMs: 0, waveGap: 0 };
+    // Waveform from the same frames: quicker while someone is watching.
+    const live = { parallel, intervalMs: 0, waveGap: measure ? 250 : 0 };
+    for (const [id, cam] of Object.entries(this.cams)) cam.setMode(this.viewers[id] > 0 ? live : idle);
     for (const body of this.cfg.bodies) {
       const want = this.viewers[body.id] > 0;
       if (want && !this.focusStreams[body.id]) this.startFocus(body);
@@ -431,15 +498,7 @@ export class ShotReadyService extends EventEmitter {
     }
   }
 
-  onFrame(id, jpeg) {
-    this.feed.push(id, jpeg);
-    this.frameCounts[id] = (this.frameCounts[id] || 0) + 1;
-    if (!this.opts.decodeJpeg) return;
-    // Waveform from the same frames: quicker while someone is watching.
-    const gap = this.viewers[id] > 0 ? 250 : this.cfg.waveformMs;
-    const now = Date.now();
-    if (now - (this.waveAt[id] || 0) < gap) return;
-    this.waveAt[id] = now;
+  measureWave(id, jpeg) {
     try {
       const { data, width, height, bgra } = this.opts.decodeJpeg(jpeg);
       this.setWave(id, lumaStats(data, width, height, { bgra }));
@@ -450,11 +509,6 @@ export class ShotReadyService extends EventEmitter {
     if (JSON.stringify(this.waves[id] || null) === JSON.stringify(wave)) return;
     if (wave) this.waves[id] = wave; else delete this.waves[id];
     this.emit('wave', { body: id, wave });
-  }
-
-  emitFeedStats() {
-    for (const id of Object.keys(this.viewers)) if (this.viewers[id] > 0) this.emit('feedstat', { body: id, fps: this.frameCounts[id] || 0 });
-    this.frameCounts = {};
   }
 
   startFocus(body) {
@@ -477,9 +531,332 @@ export class ShotReadyService extends EventEmitter {
     this.emit('focus', { body: id, focus });
   }
 
+  // The local address of each camera's picture stream.
   async feedBase() {
     await this.feedReady;
-    return this.feed.bases();
+    return Object.fromEntries(Object.entries(this.cams).map(([id, cam]) => [id, cam.base]));
+  }
+
+  // ---------- writing to cameras ----------
+  async control(body, params) {
+    // The camera reports its display settings as m.something, but takes them on menu.cgi without
+    // the m. (read from a real C80: control.cgi refuses them with 406).
+    const entries = Object.entries(params);
+    const menu = entries.every(([k]) => k.startsWith('m.'));
+    const path = this.cfg.infoPath.replace(/info\.cgi$/, menu ? 'menu.cgi' : 'control.cgi');
+    const query = new URLSearchParams(menu ? entries.map(([k, v]) => [k.slice(2), v]) : params);
+    const res = await httpGet(`http://${body.ip}${path}?${query}`, this.authForRequests());
+    const status = res.headers.get('livescope-status');
+    await res.arrayBuffer();
+    if (res.status === 401) throw new Error('login rejected');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (status && status !== '0') throw new Error(status);
+  }
+
+  // ---------- tally from the ATEM to the camera lamps ----------
+  tallyDriven(atem) { return this.cfg.tallyFromAtem !== false && !!atem.connected; }
+
+  syncTally() {
+    if (!this.liveEnabled || this.cfg.tallyFromAtem === false) return;
+    const atem = this.atemSummary();
+    const me = atem.mixEffects?.[0];
+    const tally = atem.tally || (me ? { program: [me.program], preview: [me.preview] } : null);
+    const wanted = {};
+    if (atem.connected && tally) {
+      this.cfg.locations.forEach((loc, i) => {
+        const id = this.state.assignments[loc.label]?.body;
+        if (!id) return;
+        const input = Number(loc.atemInput) || i + 1;
+        wanted[id] = tally.program.includes(input) ? 'program' : tally.preview.includes(input) ? 'preview' : 'off';
+      });
+    }
+    // Any lamp ShotReady lit but no longer controls goes out, so nothing stays red by mistake.
+    for (const id of Object.keys(this.lampSent)) wanted[id] ||= 'off';
+    for (const [id, want] of Object.entries(wanted)) {
+      const body = this.findBody(id);
+      if (body && this.reads[id]?.info) this.setLamp(body, want);
+    }
+  }
+
+  // One request at a time per camera, always ending on the newest state.
+  async setLamp(body, want) {
+    const id = body.id;
+    this.lampWant[id] = want;
+    if (this.lampBusy[id]) return;
+    this.lampBusy[id] = true;
+    try {
+      while (this.lampSent[id] !== this.lampWant[id]) {
+        const next = this.lampWant[id];
+        await this.control(body, next === 'off' ? { 'f.tally': 'off' } : { 'f.tally': 'on', 'f.tally.mode': next });
+        this.lampSent[id] = next;
+        this.lampFailed[id] = false;
+      }
+    } catch (e) {
+      if (!this.lampFailed[id]) this.log('yellow', `${id}: tally not set (${e.message})`);
+      this.lampFailed[id] = true;
+    } finally {
+      this.lampBusy[id] = false;
+    }
+  }
+
+  fastBusy = {};
+  isoSent = {};
+  isoChain = Promise.resolve();
+  focusTimers = {};
+  focusChain = {};
+
+  // The camera on preview on the lowest M/E. Only labelled cameras have a tally.
+  previewCamera() {
+    const on = (this.lastResult?.labels || []).filter((l) => l.online && l.tally?.preview?.length);
+    on.sort((a, b) => Math.min(...a.tally.preview) - Math.min(...b.tally.preview));
+    return on[0] || null;
+  }
+
+  // On air on any M/E, or visible in the program output through a key.
+  isLive(id) {
+    const label = this.labelOfBody(id);
+    const atem = this.atemSummary();
+    if (!label || !atem.connected) return false;
+    const input = Number(this.findLocation(label)?.atemInput) || this.cfg.locations.findIndex((l) => l.label === label) + 1;
+    return !!(atem.tally?.program?.includes(input) || atem.mixEffects?.some((m) => m.program === input));
+  }
+
+  // Assistant mode never touches a live camera. With the ATEM lost nobody can say which one is
+  // live, so everything waits for it to come back. Without an ATEM set up, no camera is on air.
+  #assistantLock(id) {
+    if (this.state.keyMode !== 'assistant') return null;
+    const atem = this.atemSummary();
+    if (atem.configured && !atem.connected) return 'the ATEM is not connected, so ShotReady cannot tell which cameras are live';
+    return this.isLive(id) ? `${id} is live` : null;
+  }
+
+  #guardLive(id) {
+    const why = this.#assistantLock(id);
+    if (why) throw new Error(`Assistant mode: ${why}. Nothing was changed.`);
+  }
+
+  setKeyMode(mode) {
+    if (mode !== 'mixer' && mode !== 'assistant') throw new Error('Unknown mode');
+    this.state.keyMode = mode;
+    this.saveState();
+    return mode;
+  }
+
+  // One ISO step. Run one at a time so quick taps each move a full step.
+  stepIso(dir, selected) {
+    const run = this.isoChain.catch(() => {}).then(() => this.#stepIso(dir, selected));
+    this.isoChain = run;
+    return run;
+  }
+
+  // Mixer: only ever the camera on preview. Assistant: the camera that person has selected.
+  #isoTarget(selected) {
+    if (this.state.keyMode === 'assistant') {
+      if (!selected) throw new Error('Click a camera to select it first');
+      this.#guardLive(selected);
+      return selected;
+    }
+    const cam = this.previewCamera();
+    if (!cam) throw new Error('No camera on preview');
+    if (cam.tally.program.length) throw new Error(`${cam.body} is on program too, so its ISO was not changed`);
+    return cam.body;
+  }
+
+  async #stepIso(dir, selected) {
+    const id = this.#isoTarget(selected);
+    const body = this.findBody(id);
+    const info = this.reads[id]?.info;
+    if (!body || !info) throw new Error(`${id} is not online`);
+    const control = cameraControls(info).find((c) => c.key === 'c.1.me.iso');
+    if (!control) throw new Error(`${id}: ISO cannot be stepped while it is on auto or in gain mode`);
+    // The camera's report can lag a quick tap, so step from the value just sent.
+    const sent = this.isoSent[id];
+    const from = sent && Date.now() - sent.at < 1500 ? sent.value : control.value;
+    const i = control.options.findIndex((o) => o.value === from);
+    if (i < 0) throw new Error(`${id}: ISO ${from} is not in the camera's list`);
+    const next = control.options[i + dir];
+    if (!next) throw new Error(`${id} is already at its ${dir > 0 ? 'highest' : 'lowest'} ISO`);
+    await this.control(body, { [control.key]: next.value });
+    this.isoSent[id] = { value: next.value, at: Date.now() };
+    this.log('info', `${id}: ISO set to ${next.text} from the keyboard`);
+    clearTimeout(this.isoRefresh);
+    this.isoRefresh = setTimeout(() => this.check({ force: true }).catch(() => {}), 400);
+    await sleep(50);
+    return { body: id, iso: next.text };
+  }
+
+  // Push focus closer or further while held. If the stop never arrives the camera is stopped anyway.
+  moveFocus(bodyId, dir) {
+    if (!['near', 'far', 'one_shot', 'stop'].includes(dir)) throw new Error('Unknown focus direction');
+    const body = this.findBody(bodyId);
+    const info = this.reads[bodyId]?.info;
+    if (!body || !info) throw new Error(`${bodyId} is not online`);
+    // A stop always goes through, even if the camera went live while focus was moving.
+    if (dir !== 'stop') {
+      this.#guardLive(bodyId);
+      const drive = focusDrive(info);
+      if (!drive?.ok) throw new Error(drive?.why || `${bodyId} cannot move focus`);
+    }
+    clearTimeout(this.focusTimers[bodyId]);
+    if (dir === 'near' || dir === 'far') this.focusTimers[bodyId] = setTimeout(() => this.moveFocus(bodyId, 'stop').catch(() => {}), 4000);
+    const run = (this.focusChain[bodyId] || Promise.resolve()).catch(() => {}).then(() => this.control(body, { 'c.1.focus.action': dir }));
+    this.focusChain[bodyId] = run;
+    return run.then(() => {
+      if (dir === 'one_shot') this.log('info', `${bodyId}: 1-shot focus`);
+      return true;
+    });
+  }
+
+  // Put the AF frame where the picture was clicked. x and y are fractions of the picture.
+  async setFocusFrame(bodyId, x, y) {
+    const body = this.findBody(bodyId);
+    const info = this.reads[bodyId]?.info;
+    if (!body || !info) throw new Error(`${bodyId} is not online`);
+    this.#guardLive(bodyId);
+    const frame = focusFrame(info);
+    if (!frame?.ok) throw new Error(frame?.why || `${bodyId} cannot move its AF frame`);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Unknown position');
+    // With Continuous AF on, moving the frame pulls focus straight away.
+    const onAir = this.lastResult?.labels.find((l) => l.body === bodyId)?.tally?.program?.length;
+    if (onAir && info['c.1.focus'] === 'auto') throw new Error(`${bodyId} is on program with Continuous AF on, so the box was not moved`);
+    const place = (n) => String(Math.round(Math.max(0, Math.min(1, n)) * 9999));
+    await this.control(body, { 'c.1.focus.frame.1.x': place(x), 'c.1.focus.frame.1.y': place(y) });
+    // Focusing on air would show on the program feed, so that stays a deliberate press of 1-Shot AF.
+    if (onAir) return { onAir: true };
+    if (focusDrive(info)?.ok) {
+      await sleep(100);
+      await this.moveFocus(bodyId, 'one_shot');
+    }
+    return { onAir: false };
+  }
+
+  // The repair offered on a failed check. Worked out again here from what the camera reports now.
+  async applyFix(bodyId, check) {
+    const body = this.findBody(bodyId);
+    const info = this.reads[bodyId]?.info;
+    if (!body || !info) throw new Error(`${bodyId} is not online`);
+    this.#guardLive(bodyId);
+    const fix = checkFixes(info, this.std)[check];
+    if (!fix) throw new Error(`${check} no longer needs fixing on ${bodyId}`);
+    for (const [key, value] of fix.params) {
+      await this.control(body, { [key]: value });
+      await sleep(50);
+    }
+    this.log('info', `${bodyId}: ${check} fixed (${fix.label})`);
+    this.check({ force: true }).catch(() => {});
+    return true;
+  }
+
+  // Start or stop recording. The card shows what the camera reports, not what was asked for.
+  async setRecord(bodyId, on) {
+    const body = this.findBody(bodyId);
+    const info = this.reads[bodyId]?.info;
+    if (!body || !info) throw new Error(`${bodyId} is not online`);
+    this.#guardLive(bodyId);
+    const state = recordState(info);
+    if (!state) throw new Error(`${bodyId} cannot be told to record`);
+    if (state.on === on) return true;
+    if (on && !state.ready) throw new Error(`${bodyId} has no SD Card it can record to`);
+    await this.control(body, { 'f.rec': on ? 'on' : 'off' });
+    this.log('info', `${bodyId}: record ${on ? 'start' : 'stop'} sent`);
+    this.check({ force: true }).catch(() => {});
+    return true;
+  }
+
+  // One setting on one camera. Only a setting and value the camera itself offers can be sent.
+  async setControl(bodyId, key, value) {
+    const body = this.findBody(bodyId);
+    const info = this.reads[bodyId]?.info;
+    if (!body || !info) throw new Error(`${bodyId} is not online`);
+    this.#guardLive(bodyId);
+    const control = cameraControls(info).find((c) => c.key === key);
+    if (!control) throw new Error('That setting cannot be changed right now');
+    const option = control.options.find((o) => o.value === value);
+    if (!option) throw new Error(`${bodyId} does not offer that value`);
+    // The display may go out on SDI, which feeds the switcher, so this applies in Mixer mode as well.
+    if (key === 'm.onscreen' && value === 'on' && this.isLive(bodyId)) throw new Error(`${bodyId} is live: the on-screen display would show on air`);
+    await this.control(body, { [key]: value });
+    this.log('info', `${bodyId}: ${control.name} set to ${option.text}`);
+    // The camera pushes the change as well; this covers a camera whose stream is down.
+    this.check({ force: true }).catch(() => {});
+    return true;
+  }
+
+  // ---------- default settings and white balance on every camera ----------
+  // What each reachable camera would get. steps is everything that is sent; changes is the part
+  // that differs from what the camera has now, which is what the operator is shown.
+  #bulkTargets(stepsFor, manualFor = () => []) {
+    const targets = [], offline = [], locked = [];
+    for (const body of this.cfg.bodies) {
+      const info = this.reads[body.id]?.info;
+      if (!info) { offline.push(body.id); continue; }
+      if (this.#assistantLock(body.id)) { locked.push(body.id); continue; }
+      const steps = stepsFor(info).map((p) => ({
+        ...p,
+        from: p.onOff && p.key in info ? 'ON' : info[p.key] ?? '—',
+        display: p.onOff ? 'OFF' : p.value,
+        supported: validateOnBody(p.key, p.value, info),
+      }));
+      const manual = manualFor(info);
+      targets.push({ body: body.id, label: this.labelOfBody(body.id), steps, manual, changes: [...manual, ...steps.filter((p) => info[p.key] !== p.value)] });
+    }
+    return { targets, offline, locked };
+  }
+
+  // Every step goes out, even one the camera already has, so pressing Send always does what it says.
+  async #bulkSend(targets, what) {
+    const results = await Promise.all(targets.map(async (t) => {
+      const body = this.findBody(t.body);
+      const applied = [], failed = t.manual.map((m) => ({ name: m.name, reason: m.why }));
+      for (const c of t.steps) {
+        if (!c.supported) { failed.push({ name: c.name, reason: 'not supported on this camera' }); continue; }
+        try {
+          await this.control(body, { [c.key]: c.value });
+          applied.push(c.name);
+        } catch (e) { failed.push({ name: c.name, reason: e.message }); }
+        await sleep(50); // Canon recommends a gap between separate control requests
+      }
+      return { body: t.body, applied, failed };
+    }));
+    this.log('info', `${what} sent to ${results.filter((r) => r.applied.length).length} camera(s)`);
+    for (const r of results) if (r.failed.length) this.log('yellow', `${r.body}: ${r.failed.map((f) => `${f.name} not set`).join(', ')}`);
+    await this.check({ force: true });
+    return results;
+  }
+
+  #defaultTargets() {
+    const sdi = SWITCHERS[this.state.switcher].sdi || PROFILES[this.profile].output;
+    const manualFor = (info) => (info['f.output1.videoinfo'] === sdi ? [] : [{
+      name: 'SDI output', value: fmtVideo(sdi), from: fmtVideo(info['f.output1.videoinfo']), supported: false, why: 'set this on the camera',
+    }]);
+    return this.#bulkTargets((info) => defaultsPlan(this.std, info), manualFor);
+  }
+
+  defaultsPreview() {
+    const value = (key) => defaultsPlan(this.std).find((p) => p.key === key).value;
+    const sdi = SWITCHERS[this.state.switcher].sdi || PROFILES[this.profile].output;
+    return { ...this.#defaultTargets(), defaults: { sdi: fmtVideo(sdi), gamma: value('c.1.gamma'), shutter: `1/${value('c.1.me.shutter')}` } };
+  }
+
+  defaultsApply() {
+    return this.#bulkSend(this.#defaultTargets().targets, 'Default settings');
+  }
+
+  #wbTargets(wb) {
+    const typed = wb?.kelvin ? { kelvin: String(Number(wb.kelvin)), tint: String(Number(wb.tint || 0)) } : null;
+    return this.#bulkTargets(() => (typed ? wbPlan(typed) : []));
+  }
+
+  wbPreview(wb) { return this.#wbTargets(wb); }
+
+  wbApply(wb) {
+    if (!wb?.kelvin) throw new Error('Type a Kelvin value first');
+    return this.#bulkSend(this.#wbTargets(wb).targets, 'White balance');
+  }
+
+  setCardOrder(ids) {
+    this.state.cardOrder = ids.filter((id) => this.findBody(id));
+    this.saveStateSoon();
   }
 
   liveStatus() {
@@ -550,6 +927,7 @@ export class ShotReadyService extends EventEmitter {
     return `${a.connected}|${a.modeName}`;
   }
   onAtemChange() {
+    this.syncTally();
     const a = this.atemSummary();
     const key = this.atemStateKey();
     if (key !== this.atemKey) {
@@ -843,11 +1221,14 @@ export class ShotReadyService extends EventEmitter {
     this.timer = setTimeout(tick, this.cfg.pollSeconds * 1000).unref();
   }
   stop() {
+    clearInterval(this.fastTimer);
     clearTimeout(this.timer);
     this.timer = null;
     this.liveEnabled = false;
     this.stopStreams();
-    this.feed.stop();
+    for (const cam of Object.values(this.cams)) cam.stop();
+    this.cams = {};
+    this.feedReady = null;
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; this.saveState(); }
   }
 }

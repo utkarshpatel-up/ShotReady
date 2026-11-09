@@ -36,7 +36,7 @@ const COPY_PREFIXES = [
   'c.1.wb', 'c.1.me.iso', 'c.1.me.isogain', 'c.1.me.gain', 'c.1.me.shutter', 'c.1.nd',
   'c.1.knee', 'c.1.blackgamma', 'c.1.blacklevel', 'c.1.colormatrix', 'c.1.colorcorrection',
   'c.1.skindetail', 'c.1.lowkeysaturation', 'c.1.ac', 'c.1.nr',
-  'f.tally.mode', 'f.timecode.run', 'f.rec.format',
+  'f.timecode.run', 'f.rec.format',
 ];
 const isMetaKey = (k) => /\.(list|min|max)$/.test(k) || /\.action/.test(k);
 const isCopyKey = (k) => !isMetaKey(k) && COPY_PREFIXES.some((p) => k === p || k.startsWith(p + '.'));
@@ -66,6 +66,8 @@ export function summarize(info) {
     colorbar: info['c.1.colorbar'] || 'off',
     wbMode: info['c.1.wb'] || '?',
     wbKelvin: info['c.1.wb.kelvin'] || '?',
+    wbTint: signed(info['c.1.wb.kelvin.cc']),
+    power: powerOf(info),
     iso: info['c.1.me.iso'] || '?',
     shutter: info['c.1.me.shutter'] || '?',
     shutterMode: info['c.1.me.shutter.mode'] || '?',
@@ -81,7 +83,6 @@ export function summarize(info) {
       minutes: Number(info[`f.rec.media${n}.remainingtime`] || 0),
       videoinfo: info[`f.rec.media${n}.videoinfo`] || '',
     })),
-    health: ['power', 'lens', 'fan', 'temperature'].map((k) => [k, info[`b.${k}`] ?? '0']),
     powerPercent: info['s.power.percent'] || '',
   };
 }
@@ -137,9 +138,6 @@ export function checkCamera(s, loc, profile, std) {
     if (mm) add('yellow', 'Recording format', `Slot ${mm.slot} records ${fmtVideo(mm.videoinfo)}`);
   }
 
-  const bad = s.health.filter(([, v]) => v !== '0' && v !== '');
-  if (bad.length) add('red', 'Hardware warning', bad.map(([k, v]) => `${k}=${v}`).join(', '));
-  else add('green', 'Hardware', 'No warnings');
   if (s.powerPercent && Number(s.powerPercent) < 30) add('yellow', 'Battery', `${s.powerPercent}%`);
   return r;
 }
@@ -202,7 +200,7 @@ export function essentials(info, s, std) {
   const n = Number(raw);
   const base = baseIsoOf(info, keys);
   return {
-    wb: s.wbMode === 'kelvin' ? `${s.wbKelvin}K` : s.wbMode,
+    wb: s.wbMode === 'kelvin' ? `${s.wbKelvin}K${s.wbTint && s.wbTint !== '0' ? ` ${s.wbTint}` : ''}` : s.wbMode,
     iso: s.iso,
     isoOver: base > 0 && Number(s.iso) > base,
     shutter: s.shutterMode === 'speed' ? `1/${s.shutter}` : s.shutterMode,
@@ -210,6 +208,126 @@ export function essentials(info, s, std) {
     aperture: !raw ? null : n >= 100 ? `F${n / 100}` : n > 0 ? `F${n}` : raw,
     digitalIS: pick('digitalIS'),
   };
+}
+
+function signed(v) {
+  if (v === undefined || v === '') return '';
+  return Number(v) > 0 ? `+${Number(v)}` : String(Number(v));
+}
+
+// s.power.volt is in tenths: 195 means 19.5 V. Anything other than DC counts as battery.
+function powerOf(info) {
+  const source = info['s.power.source'];
+  if (!source) return null;
+  if (source === 'dc') return { battery: false, text: info['s.power.volt'] ? `DC ${Number(info['s.power.volt']) / 10} V` : 'DC' };
+  return { battery: true, text: info['s.power.percent'] ? `Battery ${info['s.power.percent']}%` : 'Battery' };
+}
+
+// Whether focus can be pushed closer or further from here, and why not if it cannot.
+export function focusDrive(info) {
+  if (!(info['c.1.focus.action.list'] || '').split(',').includes('near')) return null;
+  if (info['c.1.lens.focus'] === 'mf') return { ok: false, why: 'The lens switch is on MF' };
+  if (info['c.1.focus'] === 'auto') return { ok: false, why: 'Continuous AF is on' };
+  return { ok: true };
+}
+
+// Whether the AF frame can be placed from here. On Auto the camera picks the place itself.
+export function focusFrame(info) {
+  if (info['c.1.focus.frame.1.x.max'] === undefined) return null;
+  if (info['c.1.focus.frame.1'] === 'auto') return { ok: false, why: 'The AF frame is on Auto' };
+  return { ok: true };
+}
+
+// Whether a camera can be told to record, is recording, and has a card that can take it.
+export function recordState(info) {
+  if (!(info['f.rec.list'] || '').split(',').includes('on')) return null;
+  return { on: info['f.rec'] === 'on', ready: [1, 2].some((n) => info[`f.rec.media${n}.status`] === 'recordable') };
+}
+
+// What an operator can change on one camera, with the values that camera says it accepts right
+// now. A setting that does not apply in the current mode is left out.
+const WB_NAMES = { auto: 'Auto', kelvin: 'Kelvin', daylight: 'Daylight', tungsten: 'Tungsten', wb_a: 'Set A', wb_b: 'Set B' };
+const AF_FRAMES = { auto: 'Auto', spot: 'Spot', zone: 'Zone', large_zone_vertical: 'Large zone V', large_zone_horizontal: 'Large zone H' };
+export function cameraControls(info) {
+  const out = [];
+  const add = (key, name, text = (v) => v) => {
+    const list = (info[`${key}.list`] || '').split(',').filter(Boolean);
+    if (list.length) out.push({ key, name, value: info[key] ?? '', options: list.map((value) => ({ value, text: text(value) })) });
+  };
+  // For a setting the camera gives as a range instead of a list.
+  const range = (key, name, text) => {
+    const lo = Number(info[`${key}.min`]), hi = Number(info[`${key}.max`]);
+    if (info[`${key}.min`] === undefined || !(hi >= lo)) return;
+    const options = Array.from({ length: hi - lo + 1 }, (_, i) => String(lo + i)).map((value) => ({ value, text: text(value) }));
+    out.push({ key, name, value: info[key] ?? '', options });
+  };
+  if (info['c.1.me.shutter.mode'] === 'speed') add('c.1.me.shutter', 'Shutter', (v) => `1/${v}`);
+  add('c.1.wb', 'White balance', (v) => WB_NAMES[v] || v);
+  if (info['c.1.wb'] === 'kelvin') add('c.1.wb.kelvin', 'Kelvin', (v) => `${v} K`);
+  if (info['c.1.wb'] === 'kelvin') range('c.1.wb.kelvin.cc', 'Tint', signed);
+  add('c.1.me.baseiso', 'Base ISO', (v) => (v === 'auto' ? 'Auto' : `ISO ${v.match(/\d{3,}/)?.[0] ?? v}`));
+  if (info['c.1.me.iso.mode'] !== 'auto' && info['c.1.me.isogain.mode'] !== 'gain') add('c.1.me.iso', 'ISO');
+  add('c.1.nd.filter', 'ND', (v) => (v === '0' ? 'Off' : `1/${Number(v) / 100}`));
+  if (info['c.1.me.diaphragm.mode'] !== 'auto') add('c.1.me.diaphragm', 'Iris', (v) => `F${Number(v) / 100}`);
+  add('c.1.focus.frame.1', 'AF frame', (v) => AF_FRAMES[v] || v);
+  add('m.onscreen', 'OSD', (v) => (v === 'on' ? 'On' : 'Off'));
+  return out;
+}
+
+// The team's default camera settings, in the order they must be applied: each mode before its
+// value. SDI output cannot be set remotely, so it is compared separately.
+export function defaultsPlan(standards, info = {}) {
+  const std = { ...DEFAULT_STANDARDS, ...standards };
+  const keys = { ...DEFAULT_STANDARDS.mandatory, ...std.mandatory };
+  return [
+    { key: 'c.1.gamma', name: 'Gamma', value: std.allowedGamma[0] },
+    { key: 'c.1.me.shutter.mode', name: 'Shutter mode', value: 'speed' },
+    { key: 'c.1.me.shutter', name: 'Shutter', value: String(std.shutterSpeed) },
+    { key: 'c.1.nd.filter', name: 'ND', value: '0' },
+    { key: 'c.1.zoom.mode', name: 'Tele-converter', value: 'off', onOff: true },
+    ...(keys.digitalIS || []).filter((k) => k in info).map((key) => ({ key, name: 'Digital IS', value: 'off', onOff: true })),
+  ];
+}
+
+// White balance as the operator typed it.
+export function wbPlan(wb) {
+  return [
+    { key: 'c.1.wb', name: 'White balance', value: 'kelvin' },
+    { key: 'c.1.wb.kelvin', name: 'Kelvin', value: wb.kelvin },
+    { key: 'c.1.wb.kelvin.cc', name: 'Tint', value: wb.tint },
+  ];
+}
+
+// The one-click repair for a failed check, keyed by the check's name, offered only when the setting
+// really is wrong and the camera accepts the value.
+export function checkFixes(info, standards) {
+  const std = { ...DEFAULT_STANDARDS, ...standards };
+  const keys = { ...DEFAULT_STANDARDS.mandatory, ...std.mandatory };
+  const fixes = {};
+  const offer = (check, label, params) => {
+    if (params.every(([k, v]) => validateOnBody(k, v, info))) fixes[check] = { label, params };
+  };
+  const on = (id) => (keys[id] || []).find((k) => k in info && !/^off$/i.test(info[k]));
+  if (on('digitalIS')) offer('Digital IS', 'Turn off', [[on('digitalIS'), 'off']]);
+  if (on('teleConverter')) offer('Tele-converter', 'Turn off', [[on('teleConverter'), 'off']]);
+  if (info['c.1.colorbar'] === 'on') offer('Color bars', 'Turn off', [['c.1.colorbar', 'off']]);
+  if ('c.1.gamma' in info && !std.allowedGamma.includes(info['c.1.gamma'])) {
+    const offered = (info['c.1.gamma.list'] || '').split(',');
+    const good = std.allowedGamma.find((g) => offered.includes(g));
+    if (good) offer('Gamma', `Set ${good}`, [['c.1.gamma', good]]);
+  }
+  const speed = String(std.shutterSpeed);
+  if (info['c.1.me.shutter.mode'] !== 'speed') offer('Shutter', `Set 1/${speed}`, [['c.1.me.shutter.mode', 'speed'], ['c.1.me.shutter', speed]]);
+  else if (Number(info['c.1.me.shutter']) !== Number(speed)) offer('Shutter', `Set 1/${speed}`, [['c.1.me.shutter', speed]]);
+  // The lowest Base ISO range that covers the current ISO, so the picture does not change.
+  const baseKey = (keys.baseIso || []).find((k) => k in info);
+  const iso = Number(info['c.1.me.iso']);
+  if (baseKey && iso > Number(info[baseKey].match(/\d{3,}/)?.[0])) {
+    const numberOf = (v) => Number(v.match(/\d{3,}/)?.[0] ?? 0);
+    const value = (info[`${baseKey}.list`] || '').split(',').filter((v) => numberOf(v) >= iso).sort((x, y) => numberOf(x) - numberOf(y))[0];
+    if (value) offer('Base ISO range', `Set Base ISO ${numberOf(value)}`, [[baseKey, value]]);
+  }
+  return fixes;
 }
 
 export function extractCopySettings(info) {

@@ -10,12 +10,12 @@ export function goodCamera(over = {}) {
     'f.output1.videoinfo': '3840x2160:25000:P',
     'c.1.gamma': 'clog2_cgamut', 'c.1.gamma.list': 'clog2_cgamut,clog3_cgamut,clog3_bt2020,clog3_bt709,pq_bt2020,hlg_bt2020,widedr_bt709,standard_bt709,canon709_bt709',
     'c.1.lookfile': 'off', 'monitoring.output1.viewassist': 'off', 'c.1.colorbar': 'off',
-    'c.1.wb': 'kelvin', 'c.1.wb.kelvin': '5600', 'c.1.wb.kelvin.min': '2000', 'c.1.wb.kelvin.max': '15000',
+    'c.1.wb': 'kelvin', 'c.1.wb.list': 'auto,kelvin,daylight,tungsten,wb_a,wb_b', 'c.1.wb.kelvin': '5600', 'c.1.wb.kelvin.list': '3200,4300,5400,5600,6500', 'c.1.me.shutter.list': '25,50,60,100,120', 'c.1.me.baseiso.list': 'auto,iso800_12db,iso3200_12db,iso12800_12db', 'c.1.nd.filter.list': '0,2,400,1600,6400', 'c.1.me.iso.mode': 'manual', 'c.1.me.diaphragm.mode': 'manual', 'c.1.me.diaphragm.list': '200,280,400,560,800',
     'c.1.me.iso': '800', 'c.1.me.iso.list': '160,200,400,800,1600,3200,6400,12800,25600',
     'c.1.me.shutter': '50', 'c.1.me.shutter.mode': 'speed', 'c.1.nd.filter': '2',
     'c.1.focus': 'manual', 'c.1.lens.focus': 'af', 'c.1.focus.detect': 'ppl_catch', 'c.1.eis': 'off', 'c.1.me.baseiso': '3200', 'c.1.zoom.mode': 'off', 'c.1.zoom.mag': '150', 'c.1.me.diaphragm': '280',
     'c.1.knee': 'on', 'c.1.knee.slope': '0', 'c.1.blacklevel': '0',
-    'f.tally': 'on', 'f.tally.mode': 'program', 'f.rec.format.media1': 'xfavc',
+    'f.tally': 'on', 'f.tally.mode': 'program', 's.power.source': 'dc', 's.power.volt': '195', 's.power.percent': '', 'c.1.wb.kelvin.cc': '0', 'c.1.wb.kelvin.cc.min': '-20', 'c.1.wb.kelvin.cc.max': '20', 'c.1.focus.action.list': 'far,near,one_shot,stop', 'c.1.focus.frame.1': 'spot', 'c.1.focus.frame.1.list': 'auto,spot,zone,large_zone_vertical,large_zone_horizontal', 'c.1.focus.frame.1.x': '0', 'c.1.focus.frame.1.x.min': '0', 'c.1.focus.frame.1.x.max': '9999', 'c.1.focus.frame.1.y': '0', 'c.1.focus.frame.1.y.min': '0', 'c.1.focus.frame.1.y.max': '9999', 'm.onscreen': 'off', 'm.onscreen.list': 'off,on', 'f.rec': 'off', 'f.rec.list': 'off,on', 'f.rec.status': 'idle', 'f.rec.format.media1': 'xfavc',
     'f.rec.media1.status': 'recordable', 'f.rec.media1.remainingtime': '180', 'f.rec.media1.videoinfo': '3840x2160:25000:P',
     'f.rec.media2.status': 'recordable', 'f.rec.media2.remainingtime': '180', 'f.rec.media2.videoinfo': '3840x2160:25000:P',
     'f.timecode.frame': 'ndf', 's.power.percent': '',
@@ -40,7 +40,7 @@ export function demoBodies() {
     { id: 'C80-3', info: goodCamera({ 's.hardware.address': mac(3), 'c.1.gamma': 'canon709_bt709', 'c.1.lens.name': 'RF24-105mm F4 L IS USM' }) },
     { id: 'C80-4', info: goodCamera({ 's.hardware.address': mac(4), 'f.rec.media1.status': 'unrecordable', 'f.rec.media1.remainingtime': '0', 'f.rec.media2.status': 'unrecordable', 'f.rec.media2.remainingtime': '0', 'f.timecode.frame': 'df' }) },
     { id: 'C80-5', info: goodCamera({ 's.hardware.address': mac(5), 'c.1.wb.kelvin': '4300', 'f.rec.media2.status': 'unrecordable', 'f.rec.media2.remainingtime': '0', 'c.1.focus': 'auto', 'c.1.lens.focus': 'mf', 'c.1.focus.detect': 'off', 'c.1.me.iso': '6400', 'c.1.me.diaphragm': '400' }) },
-    { id: 'C80-6', info: goodCamera({ 's.hardware.address': mac(6), 'f.rec.media1.status': 'unrecordable', 'f.rec.media1.remainingtime': '0', 'f.rec.media2.remainingtime': '35', 's.firmware': '1.0.6.0', 'c.1.eis': 'on' }) },
+    { id: 'C80-6', info: goodCamera({ 's.hardware.address': mac(6), 's.power.source': 'battery', 's.power.volt': '', 's.power.percent': '62', 'f.rec.media1.status': 'unrecordable', 'f.rec.media1.remainingtime': '0', 'f.rec.media2.remainingtime': '35', 's.firmware': '1.0.6.0', 'c.1.eis': 'on' }) },
     { id: 'C80-7', offline: true, info: goodCamera({ 's.hardware.address': mac(7) }) },
     { id: 'C50-8', info: goodCamera({ 's.hardware': 'EOS C50', 's.firmware': '1.0.2.1', 's.hardware.address': mac(8), 'c.1.lens.name': 'RF28-70mm F2 L USM', 'f.tally': 'off', 'c.1.zoom.mode': 'mag', 'c.1.zoom.mag': '200', 'c.1.gamma.list': 'clog2_cgamut,clog3_cgamut,canon709_bt709' }) },
   ];
@@ -58,7 +58,7 @@ export async function startSimulator(bodies, infoPath = '/-wvhttp-01-/info.cgi')
   const live = {};
   for (const b of bodies) {
     const entry = {
-      ...b, requests: 0, methods: [], subs: new Set(), metaSubs: new Set(), frameDelayMs: 0, frames: 0, focus: b.focus || null,
+      ...b, requests: 0, methods: [], subs: new Set(), metaSubs: new Set(), frameDelayMs: 0, frames: 0, controls: [], focus: b.focus || null,
       // Changes settings the way an operator would, and pushes them to open streams.
       update(items) {
         entry.info = { ...entry.info, ...items };
@@ -102,6 +102,25 @@ export async function startSimulator(bodies, infoPath = '/-wvhttp-01-/info.cgi')
           res.on('close', () => entry.metaSubs.delete(res));
           res.write(encodeMsgpack(entry.metaDoc()));
         } else res.end(encodeMsgpack(entry.metaDoc()));
+        return;
+      }
+      if (path === infoPath.replace(/info\.cgi$/, 'menu.cgi')) {
+        const items = Object.fromEntries(new URLSearchParams(query || ''));
+        const known = 'onscreen' in items;
+        if (known) { entry.controls.push({ menu: items }); entry.update({ 'm.onscreen': items.onscreen }); }
+        res.writeHead(200, { 'content-type': 'text/plain', 'livescope-status': known ? '0' : '406 Parameter Missing' });
+        res.end();
+        return;
+      }
+      if (path === infoPath.replace(/info\.cgi$/, 'control.cgi')) {
+        const items = Object.fromEntries(new URLSearchParams(query || ''));
+        entry.controls.push(items);
+        const refused = entry.refuse && Object.keys(items).some((k) => entry.refuse.includes(k));
+        if (!refused) entry.update(items);
+        if (!refused && entry.focus && 'c.1.focus.frame.1.x' in items) entry.setFocus({ ...entry.focus, pos: { ...entry.focus.pos, x: Number(items['c.1.focus.frame.1.x']), y: Number(items['c.1.focus.frame.1.y']) } });
+        if (!refused && entry.focus && items['c.1.focus.action'] === 'one_shot') entry.setFocus({ ...entry.focus, level: 2, angle: 0 });
+        res.writeHead(200, { 'content-type': 'text/plain', 'livescope-status': refused ? '403 Invalid Parameter Value' : '0' });
+        res.end();
         return;
       }
       if (path !== infoPath) { res.writeHead(404); res.end(); return; }

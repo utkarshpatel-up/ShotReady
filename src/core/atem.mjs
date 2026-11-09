@@ -44,7 +44,9 @@ export class AtemLink extends EventEmitter {
     this.atem = atem;
     const refresh = () => {
       if (this.atem !== atem) return;
-      this.data = readAtemState(atem.state, Enums.VideoMode);
+      // Everything visible on M/E 1, including keyers and anything fed in from another M/E.
+      const visible = (mode) => { try { return atem.listVisibleInputs(mode, 0); } catch { return []; } };
+      this.data = { ...readAtemState(atem.state, Enums.VideoMode), tally: { program: visible('program'), preview: visible('preview') } };
       this.emit('change');
     };
     atem.on('connected', () => {
