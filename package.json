@@ -1,7 +1,7 @@
 {
   "name": "shotready",
   "productName": "ShotReady",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Pre-mix camera verification and body tracking for Canon EOS C80 / C50 with Blackmagic ATEM 2 M/E switchers",
   "author": "utkrashpatel-up",
   "private": true,
@@ -30,7 +30,8 @@
       "package.json"
     ],
     "asarUnpack": [
-      "node_modules/@julusian/freetype2/**/*"
+      "node_modules/@julusian/freetype2/**/*",
+      "src/core/**/*"
     ],
     "win": {
       "target": [

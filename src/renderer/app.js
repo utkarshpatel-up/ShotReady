@@ -28,9 +28,10 @@ const when = (t) => (t ? new Date(t).toLocaleString() : '—');
 
 const SWITCHERS = { constellation: 'Constellation', '2me': '2 M/E 2RU' };
 const fmtWave = (w) => (w ? `${w.peak}% avg ${w.avg}%` : '—');
+const fmtRgb = (w) => (w && w.r !== undefined ? `R ${w.r}%  G ${w.g}%  B ${w.b}%` : '—');
 const fmtRuntime = (ms) => { const m = Math.floor(ms / 60000); return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`; };
 
-const app = { tab: 'dashboard', profile: '4K25', switcher: 'constellation', profiles: {}, bodies: [], result: null, atem: {}, busy: false, keepOpen: new Set(), feeds: {}, focus: {}, feedBase: [] };
+const app = { tab: 'dashboard', profile: '4K25', switcher: 'constellation', profiles: {}, bodies: [], result: null, atem: {}, busy: false, keepOpen: new Set(), feeds: {}, focus: {}, feedBase: {}, order: [], adjust: new Set(), stopArm: null, keyMode: 'mixer', selected: null };
 
 function toast(text, bad = false) {
   const t = $('toast');
@@ -76,6 +77,32 @@ function renderSwitcher() {
   $('switcher').replaceChildren(...Object.entries(SWITCHERS).map(([k, name]) =>
     h('button', { class: app.switcher === k ? 'on' : '', onclick: async () => { app.switcher = k; renderSwitcher(); await runBusy(() => call('setSwitcher', k)); } }, name)));
 }
+// Who the W and S keys are for. Mixer: the camera on preview. Assistant: the camera clicked on.
+const KEY_MODES = { mixer: 'Mixer', assistant: 'Assistant' };
+function renderKeyMode() {
+  $('keymode').replaceChildren(...Object.entries(KEY_MODES).map(([k, name]) => h('button', {
+    class: app.keyMode === k ? 'on' : '',
+    title: k === 'mixer' ? 'W and S change ISO on the camera on preview' : 'Click a camera, then W and S change its ISO',
+    onclick: () => {
+      app.keyMode = k;
+      renderKeyMode();
+      refreshLive();
+      act(() => call('setKeyMode', k));
+    },
+  }, name)));
+}
+
+// In Assistant mode a camera on program cannot be selected or changed. The app enforces it too.
+const LIVE_LOCK = 'Live on program: locked in Assistant mode';
+const isLocked = (c) => app.keyMode === 'assistant' && !!c?.tally?.program?.length;
+
+function pickCamera(body, e) {
+  if (app.keyMode !== 'assistant' || e.target.closest('select, button, input, label')) return;
+  if (isLocked(cardOf(body))) { toast(`${body} is live and cannot be selected`, true); return; }
+  app.selected = body;
+  refreshLive();
+}
+
 async function setProfile(k) {
   app.profile = k;
   renderProfile();
@@ -97,6 +124,7 @@ function row(r) {
   let action = null;
   if (r.action === 'diff' && r.label) action = h('button', { class: 'small', onclick: () => showDiff(r.label) }, 'View');
   if (r.action === 'acceptLens' && r.body) action = h('button', { class: 'small', onclick: () => act(() => call('acceptLens', r.body)) }, 'Accept');
+  if (r.fix && r.body && !r.locked) action = h('button', { class: 'small', onclick: () => act(() => call('applyFix', r.body, r.check)) }, r.fix);
   if (r.action === 'confirm' && r.body) action = h('button', { class: 'small', onclick: () => act(() => call('confirm', r.body, [r.confirmId])) }, 'Confirm');
   return h('div', { class: `row ${r.status}` },
     h('span', { class: 'ic' }, ICON[r.status]), h('span', { class: 'ck' }, r.check), h('span', { class: 'dt' }, r.detail), action || h('span'));
@@ -134,10 +162,24 @@ async function assign(label, body) {
 }
 
 const cardOf = (body) => app.result && (app.result.labels.find((l) => l.body === body) || app.result.spares.find((x) => x.body === body));
-const cardsOf = (r) => app.bodies.map((b) => r.labels.find((l) => l.body === b.id) || r.spares.find((x) => x.body === b.id)).filter(Boolean);
+const rank = (id) => { const i = app.order.indexOf(id); return i < 0 ? Infinity : i; };
+const orderedBodies = () => [...app.bodies].sort((a, b) => (rank(a.id) === rank(b.id) ? 0 : rank(a.id) - rank(b.id)));
+const cardsOf = (r) => orderedBodies().map((b) => r.labels.find((l) => l.body === b.id) || r.spares.find((x) => x.body === b.id)).filter(Boolean);
 
 // One picture element per camera, kept for good. The dashboard is rebuilt on every update, but
 // the same element is moved into the new card, so the picture never restarts or flickers.
+// A click on the picture puts the camera's AF frame there. The box moves when the camera reports it.
+function aimFocus(body, e) {
+  const c = cardOf(body);
+  if (!c?.online || !c.focusFrame || isLocked(c)) return;
+  if (!c.focusFrame.ok) { toast(c.focusFrame.why, true); return; }
+  const r = e.currentTarget.getBoundingClientRect();
+  act(async () => {
+    const done = await call('setFocusFrame', body, (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+    if (done?.onAir) toast(`${body} is on program: box moved, press 1-Shot AF to focus`);
+  });
+}
+
 function feedEl(body) {
   let f = app.feeds[body];
   if (f) return f;
@@ -146,7 +188,7 @@ function feedEl(body) {
   const chip = h('div', { class: 'fchip', hidden: true });
   const fps = h('div', { class: 'ffps' });
   const none = h('div', { class: 'fnone' }, 'No video');
-  const wrap = h('div', { class: 'feed', role: 'img', 'aria-label': `Live view of ${body}` }, img, box, chip, fps, none);
+  const wrap = h('div', { class: 'feed', role: 'img', 'aria-label': `Live view of ${body}`, onclick: (e) => aimFocus(body, e) }, img, box, chip, fps, none);
   f = app.feeds[body] = { wrap, img, box, chip, fps, none, connected: false };
   img.addEventListener('error', () => {
     if (!f.connected) return;
@@ -156,20 +198,16 @@ function feedEl(body) {
   return f;
 }
 
-// Pictures are only fetched while a camera's card is actually on screen.
+// A picture keeps running on every tab, so it is already there when the Dashboard comes back.
 function connectFeed(body) {
   const f = app.feeds[body];
-  if (!f || !app.feedBase) return;
-  // No connection for a camera that is not answering. Each connection is one of the browser's few.
+  if (!f || !app.feedBase[body]) return;
   // A short drop does not disconnect the picture: only 15 seconds of the camera not answering does.
   const online = !!cardOf(body)?.online;
   if (online) f.lastOnline = Date.now();
-  const keep = f.connected && Date.now() - (f.lastOnline || 0) < 15000;
-  const want = app.tab === 'dashboard' && document.visibilityState === 'visible' && (online || keep);
+  const want = online || (f.connected && Date.now() - (f.lastOnline || 0) < 15000);
   if (want && !f.connected) {
-    const bases = app.feedBase;
-    const base = bases[Math.max(0, app.bodies.findIndex((b) => b.id === body)) % bases.length];
-    f.img.src = `${base}/${encodeURIComponent(body)}.mjpeg?${Date.now()}`;
+    f.img.src = `${app.feedBase[body]}/${encodeURIComponent(body)}.mjpeg?${Date.now()}`;
     f.connected = true;
   } else if (!want && f.connected) {
     f.img.removeAttribute('src');
@@ -186,6 +224,7 @@ function paintFeed(body) {
   const c = cardOf(body);
   const online = !!c?.online;
   f.wrap.classList.toggle('off', !online);
+  f.wrap.classList.toggle('can-aim', online && !!c?.focusFrame?.ok && !isLocked(c));
   f.none.hidden = online;
   const focus = online ? app.focus[body] : null;
   if (focus?.box) {
@@ -200,8 +239,7 @@ function paintFeed(body) {
     kind = focus.focused ? 'ok' : 'bad';
     text = focus.focused ? 'IN FOCUS' : `OUT OF FOCUS · ${focus.dir === 'behind' ? 'back' : 'front'} focus`;
   } else if (online) {
-    const mode = c?.summary?.lensFocus === 'af' ? 'AF' : c?.summary?.lensFocus === 'mf' ? 'MF' : '';
-    text = `${mode ? `${mode} · ` : ''}no focus data`;
+    text = 'Focus not detected';
   }
   f.chip.textContent = text;
   f.chip.className = `fchip ${kind}`;
@@ -209,16 +247,130 @@ function paintFeed(body) {
   f.chip.title = focus?.guide ? `Focus guide level ${focus.level} of 2 (2 is sharp), off by ${focus.angle} (0 is sharp)` : 'The camera reports no focus guide in this mode';
 }
 
-// A slot that cannot record is shown as No SD Card. The camera only says recordable or not, so
-// this also covers a full, locked or unformatted card. Red and bold when neither slot can
-// record; plain light text when the other slot is fine, so it does not distract.
-function slot(m, other) {
-  if (m.status === '?') return h('dd', {}, '—');
-  if (m.status !== 'unrecordable') return h('dd', {}, `${m.minutes} min`);
-  return h('dd', { class: `nocard ${other.status === 'unrecordable' ? 'bad' : 'soft'}`, title: 'This slot cannot record: no card, or the card is full, locked or not formatted' }, 'No SD Card');
+// Both card slots in one field. The camera only says recordable or not, so "no card" also covers
+// a full, locked or unformatted card. A slot's letter is green when it has a usable card. Red and
+// bold when neither slot can record; plain light text for the empty one when only one is empty.
+function sdCards(media) {
+  const NOT = 'unrecordable';
+  const title = 'A slot shown as No SD Card cannot record: it is empty, or the card is full, locked or not formatted';
+  if (media[0].status === NOT && media[1].status === NOT) return h('dd', { class: 'sd nocard bad', title }, 'No SD Card');
+  const slot = (m, name) => {
+    if (m.status === '?') return h('span', { class: 'nocard soft' }, `${name} —`);
+    if (m.status === NOT) return h('span', { class: 'nocard soft' }, `${name} No SD Card`);
+    return h('span', {}, h('span', { class: 'slot-on' }, name), ` ${m.minutes} min`);
+  };
+  return h('dd', { class: 'sd', title }, slot(media[0], 'A'), '  ·  ', slot(media[1], 'B'));
 }
 const DETECT = { off: 'OFF', ppl_catch: 'ON', ppl_only: 'People only', anml_only: 'Animals only', anml_catch: 'Animals' };
 const DETECT_TIP = { off: 'Subject detection off', ppl_catch: 'People priority', ppl_only: 'People only', anml_only: 'Animals only', anml_catch: 'Animals priority' };
+
+// Dropdowns for one camera, opened with Adjust. A change goes to the camera as soon as it is picked.
+function adjustPanel(c) {
+  return h('div', { class: 'adjust' }, c.controls.map((ctl) => {
+    const known = ctl.options.some((o) => o.value === ctl.value);
+    return h('label', {}, ctl.name, h('select', {
+      'aria-label': `${ctl.name} on ${c.body}`,
+      onchange: async (e) => {
+        const sel = e.target;
+        sel.disabled = true;
+        await act(() => call('setControl', c.body, ctl.key, sel.value));
+        sel.disabled = false;
+        sel.blur();
+        refreshLive();
+      },
+    },
+    known ? null : h('option', { value: ctl.value, selected: true, disabled: true }, ctl.value || '—'),
+    ctl.options.map((o) => h('option', { value: o.value, selected: o.value === ctl.value }, o.text))));
+  }), c.focusDrive ? focusRow(c) : null);
+}
+
+// The card is rebuilt while a button is held, so the release is watched on the window.
+function holdFocus(e, body, dir) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  act(() => call('moveFocus', body, dir));
+  const events = ['pointerup', 'pointercancel', 'blur'];
+  const end = () => {
+    events.forEach((t) => window.removeEventListener(t, end));
+    act(() => call('moveFocus', body, 'stop'));
+  };
+  events.forEach((t) => window.addEventListener(t, end));
+}
+
+function focusRow(c) {
+  const d = c.focusDrive;
+  const btn = (text, dir) => h('button', {
+    class: 'small', disabled: !d.ok, title: d.ok ? `Hold to move focus ${text.toLowerCase()}` : d.why,
+    'data-focus': dir, onpointerdown: (e) => holdFocus(e, c.body, dir),
+  }, text);
+  return h('div', { class: 'focus-drive' }, h('span', {}, 'Focus'), btn('Closer', 'near'), btn('Further', 'far'));
+}
+
+// Keyboard macros. Each key steps ISO on the camera the current mode points at.
+const MACROS = { w: 1, s: -1 };
+function macroKey(e) {
+  const dir = MACROS[e.key.toLowerCase()];
+  if (!dir || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.closest?.('input, select, textarea, [contenteditable]') || !$('modal').hidden) return;
+  e.preventDefault();
+  act(async () => {
+    const r = await call('stepIso', dir, app.selected);
+    if (r) toast(`${r.body}: ISO ${r.iso}`);
+  });
+}
+
+async function setRec(body, on) {
+  await act(() => call('setRecord', body, on));
+  refreshLive();
+}
+
+// Stopping takes a second click within 3 seconds, so one stray click cannot end a take.
+function armStop(body) {
+  app.stopArm = body;
+  refreshLive();
+  setTimeout(() => {
+    if (app.stopArm !== body) return;
+    app.stopArm = null;
+    refreshLive();
+  }, 3000);
+}
+
+function oneShotButton(c) {
+  if (!c.online || !c.focusDrive) return null;
+  return h('button', {
+    class: 'small one-shot-btn',
+    disabled: !c.focusDrive.ok,
+    title: c.focusDrive.ok ? 'Focus once on the focus box' : c.focusDrive.why,
+    onclick: () => act(() => call('moveFocus', c.body, 'one_shot')),
+  }, '1-Shot AF');
+}
+
+function recButton(c) {
+  if (!c.online || !c.record) return null;
+  if (!c.record.on) {
+    return h('button', {
+      class: 'small rec-btn',
+      disabled: !c.record.ready,
+      title: c.record.ready ? `Start recording on ${c.body}` : 'No SD Card to record to',
+      onclick: () => setRec(c.body, true),
+    }, '\u25CF REC');
+  }
+  const armed = app.stopArm === c.body;
+  return h('button', {
+    class: `small rec-btn live ${armed ? 'armed' : ''}`,
+    title: 'Click twice to stop recording',
+    onclick: () => {
+      if (!armed) { armStop(c.body); return; }
+      app.stopArm = null;
+      setRec(c.body, false);
+    },
+  }, armed ? 'Stop?' : '\u25A0 Recording');
+}
+
+function toggleAdjust(body) {
+  if (app.adjust.has(body)) app.adjust.delete(body); else app.adjust.add(body);
+  refreshLive();
+}
 
 function card(c) {
   const s = c.summary;
@@ -229,8 +381,8 @@ function card(c) {
   const onPgm = tally?.program?.length, onPvw = tally?.preview?.length;
   const feed = feedEl(c.body);
 
-  const section = h('section', { class: `card ${c.spare ? 'spare' : cardColor(c)} ${c.online ? '' : 'offline'}`, 'data-body': c.body, 'data-tally': onPgm ? 'pgm' : onPvw ? 'pvw' : '' },
-    h('div', { class: 'card-head' },
+  const section = h('section', { class: `card ${c.spare ? 'spare' : cardColor(c)} ${c.online ? '' : 'offline'} ${app.keyMode === 'assistant' && app.selected === c.body ? 'selected' : ''}`, 'data-body': c.body, 'data-tally': onPgm ? 'pgm' : onPvw ? 'pvw' : '', onclick: (e) => pickCamera(c.body, e) },
+    h('div', { class: 'card-head', onpointerdown: startCardDrag, title: 'Drag to move this camera' },
       h('span', { class: 'name' }, c.body),
       onPgm ? h('span', { class: 'badge pgm' }, `PGM${tally.program.length > 1 || tally.program[0] > 1 ? ` M/E ${tally.program.join('+')}` : ''}`) : null,
       onPvw ? h('span', { class: 'badge pvw' }, `PVW${tally.preview.length > 1 || tally.preview[0] > 1 ? ` M/E ${tally.preview.join('+')}` : ''}`) : null,
@@ -241,20 +393,65 @@ function card(c) {
       h('dt', {}, 'SDI'), h('dd', {}, fmtVideo(s.output)),
       h('dt', {}, 'Gamma'), h('dd', { title: s.gamma }, s.gamma),
       h('dt', {}, 'Shutter'), h('dd', {}, s.shutterMode === 'speed' ? `1/${s.shutter}` : s.shutterMode),
-      h('dt', {}, 'ISO'), h('dd', {}, s.iso, h('span', { class: 'nd' }, `  ·  ND ${s.nd}`)),
-      h('dt', {}, 'WB'), h('dd', {}, s.wbMode === 'kelvin' ? `${s.wbKelvin} K` : s.wbMode),
       h('dt', {}, 'Focus'), h('dd', { title: 'The AF / MF switch on the lens' }, s.lensFocus === 'af' ? 'AF' : s.lensFocus === 'mf' ? 'MF' : '—'),
-      h('dt', {}, 'Card A'), slot(s.media[0], s.media[1]),
-      h('dt', {}, 'Card B'), slot(s.media[1], s.media[0]),
-      h('dt', {}, 'People Priority'), h('dd', { title: DETECT_TIP[s.detect] || s.detect }, DETECT[s.detect] || s.detect || '—'),
+      h('dt', {}, 'WB'), h('dd', {}, s.wbMode === 'kelvin' ? `${s.wbKelvin} K${s.wbTint ? `  ·  Tint ${s.wbTint}` : ''}` : s.wbMode),
       h('dt', {}, 'Continuous AF'), h('dd', { title: 'From the camera focus mode: auto is Continuous AF on, manual is off' }, s.focusMode === 'auto' ? 'ON' : s.focusMode === 'manual' ? 'OFF' : '—'),
-      h('dt', { title: 'Peak and average level, calculated from the camera preview frame' }, 'WFM'), h('dd', { 'data-wfm': c.body }, fmtWave(app.waves[c.body]))) : null,
+      h('dt', {}, 'ISO'), h('dd', {}, s.iso, h('span', { class: 'nd' }, `  ·  ND ${s.nd}`)),
+      h('dt', {}, 'People Priority'), h('dd', { title: DETECT_TIP[s.detect] || s.detect }, DETECT[s.detect] || s.detect || '—'),
+      h('dt', { title: 'Peak and average level, calculated from the camera preview frame' }, 'WFM'), h('dd', { 'data-wfm': c.body }, fmtWave(app.waves[c.body])),
+      h('dt', {}, 'Power'), h('dd', { class: s.power?.battery ? 'on-battery' : '' }, s.power?.text || '—'),
+      h('dt', {}, 'SD Card'), sdCards(s.media),
+      h('dt', { title: 'Peak of each colour, calculated from the camera preview frame' }, 'RGB'), h('dd', { 'data-rgb': c.body }, fmtRgb(app.waves[c.body]))) : null,
     c.spare ? h('div', { class: 'spare-note' }, c.online ? 'Spare: not counted in the verdict until it has a label.' : 'Spare and offline.') : null,
-    h('button', { class: `chip ${reds ? 'red' : yellows ? 'yellow' : 'green'}`, onclick: () => openChecks(c.body) },
-      reds || yellows ? `${reds ? `${ICON.red} ${reds} red` : ''}${reds && yellows ? '  ' : ''}${yellows ? `${ICON.yellow} ${yellows} yellow` : ''}  ·  see Checks` : `${ICON.green} All checks passed`));
+    c.online && c.controls?.length && app.adjust.has(c.body) ? adjustPanel(c) : null,
+    h('div', { class: 'card-actions' },
+      h('button', { class: `chip ${reds ? 'red' : yellows ? 'yellow' : 'green'}`, onclick: () => openChecks(c.body) },
+      reds || yellows ? `${reds ? `${ICON.red} ${reds} red` : ''}${reds && yellows ? '  ' : ''}${yellows ? `${ICON.yellow} ${yellows} yellow` : ''}  ·  see Checks` : `${ICON.green} All checks passed`),
+      oneShotButton(c),
+      recButton(c),
+      c.online && c.controls?.length ? h('button', { class: `small adjust-btn ${app.adjust.has(c.body) ? 'on' : ''}`, onclick: () => toggleAdjust(c.body) }, app.adjust.has(c.body) ? 'Done' : 'Adjust') : null));
+  if (isLocked(c)) {
+    if (app.selected === c.body) app.selected = null;
+    section.classList.remove('selected');
+    for (const b of section.querySelectorAll('.card-actions button:not(.chip), .adjust select, .adjust button')) { b.disabled = true; b.title = LIVE_LOCK; }
+  }
   paintFeed(c.body);
   connectFeed(c.body);
   return section;
+}
+
+// Dragging a card by its header moves it. The order is remembered.
+function startCardDrag(e) {
+  if (e.button !== 0 || e.target.closest('select, button')) return;
+  const card_ = e.currentTarget.closest('.card');
+  const grid = card_.parentElement;
+  const view = $('view');
+  const [sx, sy] = [e.clientX, e.clientY];
+  let moving = false;
+  const move = (ev) => {
+    if (!moving && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 6) return;
+    if (!moving) { moving = true; card_.classList.add('dragging'); document.body.classList.add('dragging-card'); }
+    const box = view.getBoundingClientRect();
+    if (ev.clientY < box.top + 50) view.scrollTop -= 14;
+    else if (ev.clientY > box.bottom - 50) view.scrollTop += 14;
+    const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.card');
+    if (!over || over === card_ || over.parentElement !== grid) return;
+    const kids = [...grid.children];
+    grid.insertBefore(card_, kids.indexOf(card_) > kids.indexOf(over) ? over : over.nextSibling);
+  };
+  const end = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', end);
+    document.removeEventListener('pointercancel', end);
+    if (!moving) return;
+    card_.classList.remove('dragging');
+    document.body.classList.remove('dragging-card');
+    app.order = [...grid.children].map((c) => c.dataset.body);
+    act(() => call('setCardOrder', app.order));
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', end);
+  document.addEventListener('pointercancel', end);
 }
 
 function openChecks(body) {
@@ -292,13 +489,11 @@ function renderDashboard() {
   if (rebuildBlocked()) return;
 
   const unassigned = r.labels.every((l) => !l.body);
-  const empty = r.labels.filter((l) => !l.body).map((l) => l.label);
   view.replaceChildren(
     ...banner(r),
     unassigned ? h('div', { class: 'setup' }, 'No bodies are assigned yet.',
       h('button', { class: 'primary', onclick: () => runBusy(() => call('assignInOrder')) }, 'Assign in order'),
       h('span', { class: 'empty' }, 'First body gets the first label, and so on. Change any card afterwards.')) : '',
-    empty.length && !unassigned ? h('div', { class: 'global' }, row({ status: 'yellow', check: 'No body', detail: `${empty.join(', ')} ${empty.length > 1 ? 'have' : 'has'} no camera` })) : '',
     h('div', { class: 'grid' }, cardsOf(r).map(card)),
   );
 }
@@ -306,7 +501,7 @@ function renderDashboard() {
 // ---------- checks ----------
 function checkPanel(c) {
   const order = { red: 0, yellow: 1, info: 2, green: 3 };
-  const all = [...c.results, ...(c.checks || [])].map((r) => ({ ...r, label: c.label, body: c.body })).sort((a, b) => order[a.status] - order[b.status]);
+  const all = [...c.results, ...(c.checks || [])].map((r) => ({ ...r, label: c.label, body: c.body, locked: isLocked(c) })).sort((a, b) => order[a.status] - order[b.status]);
   const toConfirm = all.filter((r) => r.action === 'confirm');
   return h('section', { class: `panel ${c.spare ? 'spare' : cardColor(c)}`, 'data-body': c.body },
     h('div', { class: 'card-head' },
@@ -314,10 +509,74 @@ function checkPanel(c) {
       h('span', { class: 'sub-line' }, `${c.label || 'Spare'}${c.summary ? ` · ${shortLens(c.summary.lens)}` : ''}`)),
     c.spare ? h('div', { class: 'spare-note' }, 'Spare: not counted in the verdict until it has a label.') : null,
     h('div', { class: 'rows' }, all.map(row)),
-    c.online ? h('div', { class: 'card-foot' },
-      toConfirm.length > 1 ? h('button', { class: 'small', onclick: () => act(() => call('confirm', c.body, toConfirm.map((r) => r.confirmId))) }, `Confirm all (${toConfirm.length})`) : null,
-      c.label ? h('button', { class: 'small', onclick: () => showDiff(c.label) }, c.ref ? `Compare with ${c.ref.fromBody}${c.diffCount ? ` (${c.diffCount})` : ''}` : 'Compare') : null,
-      c.label ? h('button', { class: 'small', onclick: () => snapshot(c.label) }, 'Save as reference') : null) : null);
+    c.online && toConfirm.length > 1 ? h('div', { class: 'card-foot' },
+      toConfirm.length > 1 ? h('button', { class: 'small', onclick: () => act(() => call('confirm', c.body, toConfirm.map((r) => r.confirmId))) }, `Confirm all (${toConfirm.length})`) : null) : null);
+}
+
+// Shows exactly what would change on each camera, and only then writes.
+// The two all-camera actions. Both list what will change, and Send always sends everything.
+async function showBulk(kind) {
+  const isWb = kind === 'wb';
+  const kelvin = isWb ? h('input', { type: 'number', step: 100, value: '', placeholder: 'e.g. 5600', 'aria-label': 'White balance in Kelvin' }) : null;
+  const tint = isWb ? h('input', { type: 'number', min: -20, max: 20, step: 1, value: '0', 'aria-label': 'Tint' }) : null;
+  const wb = () => (kelvin?.value ? { kelvin: kelvin.value, tint: tint.value } : null);
+  const preview = () => (isWb ? call('wbPreview', wb()) : call('defaultsPreview'));
+  const first = await act(preview);
+  if (!first) return;
+
+  const area = h('div', { class: 'scroll' });
+  const actions = h('div', { class: 'actions' });
+  const offline = h('div', { class: 'empty' });
+  const note = h('div', { class: 'note' }, isWb
+    ? 'Sets every reachable camera to Kelvin white balance with this value and tint. This changes the cameras straight away, so do it between shows.'
+    : `Sends Gamma ${first.defaults.gamma}, Shutter ${first.defaults.shutter}, ND 0, Tele-converter OFF and Digital IS OFF to every reachable camera. SDI output ${first.defaults.sdi} can only be set on the camera. White balance is not touched. This changes the cameras straight away, so do it between shows.`);
+
+  const send = async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = 'Setting cameras…';
+    const results = await act(() => (isWb ? call('wbApply', wb()) : call('defaultsApply')));
+    if (!results) { closeModal(); return; }
+    area.replaceChildren(h('table', { class: 'match-list' }, h('tbody', {}, results.filter((r) => r.applied.length || r.failed.length).map((r) => h('tr', {},
+      h('td', {}, h('strong', {}, r.body)),
+      h('td', {}, r.applied.length ? `${ICON.green} ${r.applied.join(', ')}` : '', r.failed.map((f) => h('div', { class: 'no' }, `${f.name}: ${f.reason}`))))))));
+    note.textContent = 'Done. The checks have been re-run.';
+    actions.replaceChildren(h('button', { class: 'primary', onclick: closeModal }, 'Close'));
+  };
+
+  const paint = (plan) => {
+    const shown = plan.targets.filter((t) => t.changes.length);
+    const count = plan.targets.filter((t) => t.steps.some((c) => c.supported)).length;
+    const anyToChange = plan.targets.some((t) => t.changes.some((c) => c.supported));
+    offline.textContent = [plan.offline.length ? `Not reachable, so not included: ${plan.offline.join(', ')}.` : '', plan.locked.length ? `Locked in Assistant mode, so not included: ${plan.locked.join(', ')}.` : ''].join(' ').trim();
+    area.replaceChildren(
+      shown.length ? h('table', { class: 'match-list' }, h('tbody', {}, shown.map((t) => h('tr', {},
+        h('td', {}, h('strong', {}, t.body), t.label ? ` (${t.label})` : ''),
+        h('td', {}, t.changes.flatMap((c, i) => [i ? ' · ' : '', h('span', { class: c.supported ? '' : 'no' }, `${c.name} ${c.from} → ${c.display ?? c.value}${c.supported ? '' : ` (${c.why || 'not supported'})`}`)])))))) : '',
+      !anyToChange && (!isWb || wb()) ? h('p', { class: 'all-ok' }, `${ICON.green} ${isWb ? 'White balance' : 'Gamma, shutter, ND, Digital IS and Tele-converter'} already match on every reachable camera. Send applies them again.`) : '',
+    );
+    const need = isWb && !wb();
+    actions.replaceChildren(
+      h('button', { onclick: closeModal }, 'Cancel'),
+      h('button', { class: 'primary', disabled: need || !count, onclick: send }, need ? 'Type a Kelvin value' : `${isWb ? 'Send WB' : 'Send default settings'} to ${count} camera${count === 1 ? '' : 's'}`),
+    );
+  };
+
+  // Only the newest answer is drawn, so a slow reply cannot overwrite what was typed since.
+  let latest = 0;
+  const update = async () => {
+    const mine = ++latest;
+    const plan = await act(preview);
+    if (plan && mine === latest) paint(plan);
+  };
+  kelvin?.addEventListener('input', update);
+  tint?.addEventListener('input', update);
+  paint(first);
+
+  $('modal').replaceChildren(h('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true' },
+    h('h2', {}, isWb ? 'Send WB to all cameras' : 'Set default settings on all cameras'),
+    isWb ? h('div', { class: 'wb-inputs' }, h('strong', {}, 'White balance'), h('label', {}, 'Kelvin', kelvin), h('label', {}, 'Tint', tint)) : '',
+    area, offline, note, actions));
+  $('modal').hidden = false;
 }
 
 function renderChecks() {
@@ -329,6 +588,7 @@ function renderChecks() {
     ...banner(r),
     r.matching.length ? h('div', { class: 'section' }, h('h2', {}, 'Camera matching'),
       h('div', { class: 'rows' }, r.matching.map((m) => row({ status: 'yellow', check: m.name, detail: m.detail })))) : '',
+    h('div', { class: 'checks-actions' }, h('button', { id: 'wb-btn', onclick: () => showBulk('wb') }, 'Send WB to all cameras'), h('button', { id: 'defaults-btn', onclick: () => showBulk('defaults') }, 'Set default settings on all cameras')),
     h('div', { class: 'checks-grid' }, cardsOf(r).map(checkPanel)),
   );
 }
@@ -564,7 +824,7 @@ function showUpdate(r) {
 // ---------- start ----------
 async function start() {
   const init = await call('init');
-  Object.assign(app, { profiles: init.profiles, profile: init.profile, switcher: init.switcher, bodies: init.bodies, atem: init.atem, result: init.result, waves: { ...init.waves }, feedBase: init.feed, focus: { ...init.focus } });
+  Object.assign(app, { profiles: init.profiles, profile: init.profile, switcher: init.switcher, bodies: init.bodies, atem: init.atem, result: init.result, waves: { ...init.waves }, feedBase: init.feed, focus: { ...init.focus }, order: init.cardOrder || [], keyMode: init.keyMode || 'mixer' });
   $('demo').hidden = !init.demo;
   $('auto').checked = init.autoRefresh;
   $('auto-text').textContent = 'Live';
@@ -572,6 +832,7 @@ async function start() {
   $('update-btn').onclick = checkUpdates;
   renderTabs();
   renderSwitcher();
+  renderKeyMode();
   renderProfile();
   refreshView();
   const showBar = (on) => { $('bar-toggle').classList.toggle('on', on); $('bar-toggle').onclick = () => act(() => call('setBar', !on)); };
@@ -584,6 +845,7 @@ async function start() {
   };
   $('auto').onchange = (e) => act(() => call('setAutoRefresh', e.target.checked));
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('modal').hidden) closeModal(); });
+  document.addEventListener('keydown', macroKey);
   document.addEventListener('pointerdown', () => { app.pointerDown = true; }, true);
   document.addEventListener('pointerup', () => {
     app.pointerDown = false;
@@ -605,6 +867,7 @@ async function start() {
   api.on('wave', ({ body, wave }) => {
     if (wave) app.waves[body] = wave; else delete app.waves[body];
     for (const d of document.querySelectorAll('[data-wfm]')) if (d.dataset.wfm === body) d.textContent = fmtWave(wave);
+    for (const d of document.querySelectorAll('[data-rgb]')) if (d.dataset.rgb === body) d.textContent = fmtRgb(wave);
   });
   api.on('focus', ({ body, focus }) => {
     if (focus) app.focus[body] = focus; else delete app.focus[body];

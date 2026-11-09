@@ -64,7 +64,7 @@ main { flex: 1; overflow: auto; padding: 12px 14px; }
 .badge.pgm { background: var(--pgm); }
 .badge.pvw { background: var(--pvw); }
 .sub-line { color: var(--dim); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.facts { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 1px 8px; font-size: 12.5px; }
+.facts { display: grid; grid-template-columns: auto minmax(max-content, 1fr) auto 1fr; gap: 1px 8px; font-size: 12.5px; }
 .facts dt { color: var(--dim); margin: 0; }
 .facts dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rows { display: flex; flex-direction: column; gap: 3px; }
@@ -162,3 +162,46 @@ button.chip.green { color: var(--green); }
 #update-btn { margin-left: 10px; }
 .dialog ul { margin: 0; padding-left: 20px; }
 .dialog li { margin: 2px 0; }
+
+/* movable cards */
+.card .card-head { cursor: grab; user-select: none; touch-action: none; }
+.card .card-head select { cursor: pointer; }
+.card.dragging { opacity: .7; outline: 2px solid var(--blue); }
+body.dragging-card, body.dragging-card .card .card-head { cursor: grabbing; }
+.match-list td { font-size: 12.5px; }
+.match-list .no { color: var(--yellow); }
+
+/* SD card field */
+.facts dd.sd { white-space: pre; }
+.facts .slot-on { color: var(--green); font-weight: 700; }
+
+/* per-camera controls */
+.card-actions { display: flex; gap: 6px; }
+.card-actions .chip { flex: 1; width: auto; }
+.card-actions .adjust-btn.on { background: #e9ebef; color: #14161a; font-weight: 600; }
+.adjust { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 6px 8px; padding: 7px 8px; background: var(--panel-2); border-radius: 5px; }
+.adjust label { display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; color: var(--dim); }
+.adjust select { color: var(--text); width: 100%; font-size: 12.5px; }
+
+/* record */
+.rec-btn { color: var(--red); font-weight: 600; white-space: nowrap; }
+.rec-btn:disabled { color: var(--dim); opacity: .55; cursor: not-allowed; }
+button.rec-btn.live, button.rec-btn.live:hover:not(:disabled) { background: var(--red); border-color: var(--red); color: #fff; }
+button.rec-btn.armed, button.rec-btn.armed:hover:not(:disabled) { background: #fff; border-color: var(--red); color: #c81e1e; }
+
+/* focus and power */
+.adjust .focus-drive { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dim); }
+.adjust .focus-drive button { flex: 1; color: var(--text); }
+.facts dd.on-battery { color: var(--red); font-weight: 700; }
+
+/* aiming focus */
+.feed.can-aim { cursor: crosshair; }
+.one-shot-btn { white-space: nowrap; }
+
+/* assistant selection and the Set all white balance */
+.card.selected { outline: 2px solid var(--blue); outline-offset: 1px; }
+.wb-inputs { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font-size: 12.5px; color: var(--dim); }
+.wb-inputs label { display: flex; align-items: center; gap: 6px; }
+.wb-inputs input { width: 90px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; }
+
+.checks-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 8px 0; }

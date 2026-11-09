@@ -100,21 +100,20 @@ test('live view: watching a camera starts frames and focus, and leaving stops th
   svc.on('focus', (e) => focus.push(e));
   try {
     svc.startLive();
-    const [base] = await svc.feedBase();
-    assert.ok(await until(() => svc.frames['C80-1']));
-    assert.equal(svc.frames['C80-1'].parallel, 0, 'nobody watching: no picture requests');
+    const { 'C80-1': base } = await svc.feedBase();
+    assert.equal(svc.cams['C80-1'].mode.parallel, 0, 'nobody watching: no picture requests');
     assert.equal(cam.metaSubs.size, 0, 'nobody watching: no focus connection');
 
     let bytes = 0;
     const u = new URL(`${base}/C80-1.mjpeg`);
     const viewer = http.get({ host: u.hostname, port: u.port, path: u.pathname }, (res) => res.on('data', (c) => { bytes += c.length; }));
-    assert.ok(await until(() => svc.frames['C80-1'].parallel === 4), 'watched: the most overlapping requests');
+    assert.ok(await until(() => svc.cams['C80-1'].mode.parallel === 4), 'watched: the most overlapping requests');
     assert.ok(await until(() => bytes > 200), 'pictures reach the viewer');
     assert.ok(await until(() => focus.at(-1)?.focus?.focused === true), 'in focus is reported');
     cam.setFocus(guide(0));
     assert.ok(await until(() => focus.at(-1)?.focus?.focused === false), 'a change in focus is pushed');
 
     viewer.destroy();
-    assert.ok(await until(() => svc.frames['C80-1'].parallel === 0 && cam.metaSubs.size === 0), 'leaving stops pictures and focus');
+    assert.ok(await until(() => svc.cams['C80-1'].mode.parallel === 0 && cam.metaSubs.size === 0), 'leaving stops pictures and focus');
   } finally { svc.stop(); }
 });

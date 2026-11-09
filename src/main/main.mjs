@@ -94,6 +94,7 @@ async function startService() {
     for (const b of Object.values(sim.bodies)) b.frameDelayMs = 60;
     // Simulator ports change each launch, so a demo always starts from a clean config.
     const config = sim.config({ pollSeconds: 10 });
+    config.locations.push({ label: 'Cam-09', atemInput: 9 }, { label: 'Cam-10', atemInput: 10 });
     const atem = new FakeAtemLink({
       modeName: 'P4KHDp25', modeLabel: '2160p25',
       inputs: Object.fromEntries(config.locations.map((l) => [l.atemInput, l.label])),
@@ -145,6 +146,8 @@ const api = {
   init: async () => ({
     feed: await svc.feedBase(),
     focus: svc.focus,
+    cardOrder: svc.state.cardOrder || [],
+    keyMode: svc.state.keyMode || 'mixer',
     profiles: PROFILES,
     profile: svc.profile,
     switcher: svc.state.switcher,
@@ -162,6 +165,18 @@ const api = {
   setProfile: (k) => svc.setProfile(k),
   setSwitcher: (k) => svc.setSwitcher(k),
   confirm: (id, ids) => svc.confirm(id, ids),
+  setCardOrder: (ids) => svc.setCardOrder(ids),
+  setControl: (id, key, value) => svc.setControl(id, key, value),
+  setRecord: (id, on) => svc.setRecord(id, on),
+  stepIso: (dir, id) => svc.stepIso(dir > 0 ? 1 : -1, id),
+  setKeyMode: (mode) => svc.setKeyMode(mode),
+  applyFix: (id, check) => svc.applyFix(id, check),
+  moveFocus: (id, dir) => svc.moveFocus(id, dir),
+  setFocusFrame: (id, x, y) => svc.setFocusFrame(id, x, y),
+  defaultsPreview: () => svc.defaultsPreview(),
+  defaultsApply: () => svc.defaultsApply(),
+  wbPreview: (wb) => svc.wbPreview(wb),
+  wbApply: (wb) => svc.wbApply(wb),
   setBar: (on) => setBar(on),
   showMain: () => { if (win.isMinimized()) win.restore(); win.show(); win.focus(); },
   assign: (label, body) => svc.assign(label, body),

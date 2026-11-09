@@ -1,5 +1,4 @@
-// GET with Basic / Digest auth. Only ever issues GET requests: ShotReady does not
-// write to cameras until Canon's XC documentation confirms which keys are writable.
+// GET with Basic / Digest auth. The XC protocol reads and writes settings with GET requests.
 import { createHash, randomBytes } from 'node:crypto';
 
 const md5 = (s) => createHash('md5').update(s).digest('hex');
