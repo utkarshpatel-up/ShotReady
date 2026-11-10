@@ -19,7 +19,7 @@ Codex owns:
 
 Codex should not perform lengthy analysis for work that can be delegated to Sonnet with clear instructions.
 
-**Primary rule:** Codex coordinates efficiently; Claude performs implementation.
+Primary rule: Codex coordinates efficiently; Claude performs implementation.
 
 ## 2. Codex Task Classification
 
@@ -292,10 +292,10 @@ Claude should not perform a second full review when only a small correction requ
 
 Codex should select verification proportionally to risk.
 
-- **Trivial changes:** Relevant direct checks.
-- **Routine changes:** Targeted unit tests, linting, or type checks.
-- **Medium changes:** Module-level and integration tests as appropriate.
-- **Complex changes:** Broader regression and integration verification.
+- Trivial changes: Relevant direct checks.
+- Routine changes: Targeted unit tests, linting, or type checks.
+- Medium changes: Module-level and integration tests as appropriate.
+- Complex changes: Broader regression and integration verification.
 
 Do not automatically run every available test for every change.
 
@@ -305,14 +305,21 @@ Never claim that tests passed without evidence.
 
 ## 9. Implementation Checkpoints
 
-Before a new implementation phase, Codex must provide the user with:
+Before a new implementation phase:
 
-- **Completed:** What changed.
-- **Behavior:** What currently works.
-- **Validated:** Tests performed and outcomes.
-- **Outstanding:** Known issues and incomplete work.
-- **Proposed next phase:** Specific next changes.
-- **Approval:** Ask whether to proceed.
+Codex must provide the user with:
+
+Completed: What changed.
+
+Behavior: What currently works.
+
+Validated: Tests performed and outcomes.
+
+Outstanding: Known issues and incomplete work.
+
+Proposed next phase: Specific next changes.
+
+Approval: Ask whether to proceed.
 
 Do not start a new phase until the user explicitly approves.
 
@@ -340,14 +347,14 @@ Routine fixes and verification within an already-approved phase may continue wit
 
 For every task, Codex should use this decision order:
 
-1. Is the task approved or already within an approved phase?
-2. Can the task be answered without reading or modifying the repository?
-3. Can one direct tool operation complete a trivial request safely?
-4. Is the task a moderate refactor? If yes, route directly to Claude Opus 5.5 with medium effort.
-5. Otherwise, if implementation is required, can Sonnet reliably handle it? Does the complexity justify Opus?
-6. What is the minimum relevant context the worker needs?
-7. What validation and review are necessary for correctness?
-8. Can the final outcome be reported concisely?
+- Is the task approved or already within an approved phase?
+- Can the task be answered without reading or modifying the repository?
+- Can one direct tool operation complete a trivial request safely?
+- Is the task a moderate refactor? If yes, route directly to Claude Opus 5.5 with medium effort.
+- Otherwise, if implementation is required, can Sonnet reliably handle it? Does the complexity justify Opus?
+- What is the minimum relevant context the worker needs?
+- What validation and review are necessary for correctness?
+- Can the final outcome be reported concisely?
 
 Do not use extra reasoning, agents, or tools without a concrete benefit.
 
