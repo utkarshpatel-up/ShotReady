@@ -9,7 +9,7 @@ to, with **Adjust** on a camera's card or the all-camera buttons on the Checks t
 
 ## Run it
 
-Install `dist/ShotReady-1.3.0-Windows-Setup.exe`, or unzip the portable build. From source:
+Install `dist/ShotReady-1.5.0-Windows-Setup.exe`, or unzip the portable build. From source:
 
     npm install
     npx install-electron
