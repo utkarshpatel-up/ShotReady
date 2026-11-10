@@ -27,6 +27,7 @@ function cell(l) {
   const worst = l.results.some((r) => r.status === 'red') ? 'red' : l.results.some((r) => r.status === 'yellow') ? 'yellow' : 'green';
   const c = el('div', `cell ${worst}`);
   c.dataset.label = l.label;
+  c.dataset.tally = l.tally?.program?.length ? 'pgm' : l.tally?.preview?.length ? 'pvw' : '';
   const head = el('div', 'head');
   head.append(el('b', '', l.label), el('span', '', l.body));
   if (l.tally?.program?.length) head.append(el('span', 'badge pgm', 'PGM'));

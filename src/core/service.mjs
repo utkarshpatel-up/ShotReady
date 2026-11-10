@@ -560,7 +560,7 @@ export class ShotReadyService extends EventEmitter {
       this.cfg.locations.forEach((loc, i) => {
         const id = this.state.assignments[loc.label]?.body;
         if (!id) return;
-        const input = Number(loc.atemInput) || i + 1;
+        const input = this.inputOf(loc);
         wanted[id] = tally.program.includes(input) ? 'program' : tally.preview.includes(input) ? 'preview' : 'off';
       });
     }
@@ -611,7 +611,7 @@ export class ShotReadyService extends EventEmitter {
     const label = this.labelOfBody(id);
     const atem = this.atemSummary();
     if (!label || !atem.connected) return false;
-    const input = Number(this.findLocation(label)?.atemInput) || this.cfg.locations.findIndex((l) => l.label === label) + 1;
+    const input = this.inputOf(this.findLocation(label));
     return !!(atem.tally?.program?.includes(input) || atem.mixEffects?.some((m) => m.program === input));
   }
 
@@ -909,10 +909,13 @@ export class ShotReadyService extends EventEmitter {
     if (!this.atem) return { configured: false, connected: false };
     return { ...this.atem.status, ...(this.atem.data || {}) };
   }
+  // A label's ATEM input. With none set, the first label is input 1, and so on.
+  inputOf(loc) { return Number(loc?.atemInput) || this.cfg.locations.indexOf(loc) + 1; }
   atemTally(loc, atem) {
-    if (!atem.connected || !loc.atemInput || !atem.mixEffects) return null;
-    const on = (k) => atem.mixEffects.flatMap((m, i) => (m[k] === Number(loc.atemInput) ? [i + 1] : []));
-    return { program: on('program'), preview: on('preview'), input: Number(loc.atemInput) };
+    const input = this.inputOf(loc);
+    if (!atem.connected || !input || !atem.mixEffects) return null;
+    const on = (k) => atem.mixEffects.flatMap((m, i) => (m[k] === input ? [i + 1] : []));
+    return { program: on('program'), preview: on('preview'), input };
   }
   atemStateKey() {
     const a = this.atemSummary();
@@ -928,7 +931,7 @@ export class ShotReadyService extends EventEmitter {
       if (this.lastResult) this.check({ force: true }).catch(() => {});
     } else if (this.lastResult) {
       // Cut on the switcher: update program/preview without re-reading cameras.
-      for (const l of this.lastResult.labels) l.tally = this.atemTally(this.findLocation(l.label) || {}, a);
+      for (const l of this.lastResult.labels) l.tally = this.atemTally(this.findLocation(l.label), a);
       this.emit('result', this.lastResult);
     }
     this.emit('atem', a);

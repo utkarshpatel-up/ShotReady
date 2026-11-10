@@ -56,6 +56,8 @@ main { flex: 1; overflow: auto; padding: 12px 14px; }
 .card.red { border-top-color: var(--red); }
 .card.yellow { border-top-color: var(--yellow); }
 .card.green { border-top-color: var(--green); }
+.card[data-tally="pgm"] { border-color: var(--pgm); background: #301c20; box-shadow: inset 0 0 0 2px var(--pgm); }
+.card[data-tally="pvw"] { border-color: var(--pvw); background: #192c23; box-shadow: inset 0 0 0 2px var(--pvw); }
 .card-head { display: flex; align-items: center; gap: 8px; }
 .card-head .name { font-size: 16px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-head select { margin-left: auto; max-width: 170px; font-weight: 600; }
