@@ -188,8 +188,9 @@ function feedEl(body) {
   const chip = h('div', { class: 'fchip', hidden: true });
   const fps = h('div', { class: 'ffps' });
   const none = h('div', { class: 'fnone' }, 'No video');
-  const wrap = h('div', { class: 'feed', role: 'img', 'aria-label': `Live view of ${body}`, onclick: (e) => aimFocus(body, e) }, img, box, chip, fps, none);
-  f = app.feeds[body] = { wrap, img, box, chip, fps, none, connected: false };
+  const osd = h('div', { class: 'fosd', hidden: true }, 'OSD IS ON');
+  const wrap = h('div', { class: 'feed', role: 'img', 'aria-label': `Live view of ${body}`, onclick: (e) => aimFocus(body, e) }, img, box, chip, fps, none, osd);
+  f = app.feeds[body] = { wrap, img, box, chip, fps, none, osd, connected: false };
   img.addEventListener('error', () => {
     if (!f.connected) return;
     f.connected = false;
@@ -226,6 +227,8 @@ function paintFeed(body) {
   f.wrap.classList.toggle('off', !online);
   f.wrap.classList.toggle('can-aim', online && !!c?.focusFrame?.ok && !isLocked(c));
   f.none.hidden = online;
+  // The camera's display goes out on its outputs, so say so over the picture.
+  f.osd.hidden = !(online && c.controls?.find((k) => k.key === 'm.onscreen')?.value === 'on');
   const focus = online ? app.focus[body] : null;
   if (focus?.box) {
     const b = focus.box;
@@ -306,12 +309,47 @@ function focusRow(c) {
   return h('div', { class: 'focus-drive' }, h('span', {}, 'Focus'), btn('Closer', 'near'), btn('Further', 'far'));
 }
 
-// Keyboard macros. Each key steps ISO on the camera the current mode points at.
+// Keyboard macros. W and S step ISO on the camera the current mode points at.
+// M turns that camera's display on and opens its menu. While a menu is open, W A S D move,
+// Space selects, and Q or Esc go back a level (closing the menu at the top). Esc with no menu
+// open turns the display off.
 const MACROS = { w: 1, s: -1 };
+const MENU_KEYS = { w: 'up', a: 'left', s: 'down', d: 'right', ' ': 'enter', q: 'back', escape: 'escape' };
+// Holding a direction steps at most every MENU_REPEAT_MS, and only after the camera has taken the
+// last key. Repeats that arrive meanwhile are dropped, not queued, so the cursor stops on release.
+const MENU_REPEAT_MS = 250;
+const menuHold = { busy: false, last: 0 };
+const osdOn = () => cardsOf(app.result || { labels: [], spares: [] }).some((c) => c.online && c.controls?.find((k) => k.key === 'm.onscreen')?.value === 'on');
 function macroKey(e) {
-  const dir = MACROS[e.key.toLowerCase()];
-  if (!dir || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.target.closest?.('input, select, textarea, [contenteditable]') || !$('modal').hidden) return;
+  if (k === 'm') {
+    if (e.repeat) return;
+    e.preventDefault();
+    act(async () => { const r = await call('menuKey', 'open', app.selected); if (r) toast(`${r.body}: menu open`); });
+    return;
+  }
+  if (MENU_KEYS[k] && osdOn()) {
+    e.preventDefault();
+    // Space, Q and Esc act once per press. A held direction repeats at a steady pace.
+    if (e.repeat && (!'wasd'.includes(k) || menuHold.busy || Date.now() - menuHold.last < MENU_REPEAT_MS)) return;
+    const held = e.repeat;
+    menuHold.busy = true;
+    menuHold.last = Date.now();
+    act(async () => {
+      const r = await call('menuKey', MENU_KEYS[k], app.selected).finally(() => { menuHold.busy = false; });
+      if (r?.did === 'osd off') toast(`${r.body}: display off`);
+      // No menu open: W and S keep their ISO job, one step per press as before.
+      if (r === null && MACROS[k] && !held) {
+        const iso = await call('stepIso', MACROS[k], app.selected);
+        if (iso) toast(`${iso.body}: ISO ${iso.iso}`);
+      }
+    });
+    return;
+  }
+  const dir = MACROS[k];
+  if (!dir || e.repeat) return;
   e.preventDefault();
   act(async () => {
     const r = await call('stepIso', dir, app.selected);
@@ -384,8 +422,9 @@ function card(c) {
   const section = h('section', { class: `card ${c.spare ? 'spare' : cardColor(c)} ${c.online ? '' : 'offline'} ${app.keyMode === 'assistant' && app.selected === c.body ? 'selected' : ''}`, 'data-body': c.body, 'data-tally': onPgm ? 'pgm' : onPvw ? 'pvw' : '', onclick: (e) => pickCamera(c.body, e) },
     h('div', { class: 'card-head', onpointerdown: startCardDrag, title: 'Drag to move this camera' },
       h('span', { class: 'name' }, c.body),
-      onPgm ? h('span', { class: 'badge pgm' }, `PGM${tally.program.length > 1 || tally.program[0] > 1 ? ` M/E ${tally.program.join('+')}` : ''}`) : null,
-      onPvw ? h('span', { class: 'badge pvw' }, `PVW${tally.preview.length > 1 || tally.preview[0] > 1 ? ` M/E ${tally.preview.join('+')}` : ''}`) : null,
+      h('span', { class: 'tally-tags' },
+        onPgm ? h('span', { class: 'badge pgm' }, `PROGRAM${tally.program.length > 1 || tally.program[0] > 1 ? ` M/E ${tally.program.join('+')}` : ''}`) : null,
+        onPvw ? h('span', { class: 'badge pvw' }, `PREVIEW${tally.preview.length > 1 || tally.preview[0] > 1 ? ` M/E ${tally.preview.join('+')}` : ''}`) : null),
       labelSelect(c)),
     h('div', { class: 'sub-line', title: s?.lens }, `${c.ip}${s ? ` · ${s.model} · ${shortLens(s.lens)}` : ''}`),
     feed.wrap,
@@ -413,7 +452,7 @@ function card(c) {
   if (isLocked(c)) {
     if (app.selected === c.body) app.selected = null;
     section.classList.remove('selected');
-    for (const b of section.querySelectorAll('.card-actions button:not(.chip), .adjust select, .adjust button')) { b.disabled = true; b.title = LIVE_LOCK; }
+    for (const b of section.querySelectorAll('.card-actions button:not(.chip):not(.one-shot-btn), .adjust select, .adjust button')) { b.disabled = true; b.title = LIVE_LOCK; }
   }
   paintFeed(c.body);
   connectFeed(c.body);
@@ -844,7 +883,7 @@ async function start() {
     if (r?.reportPath) toast('Check finished. Report saved.');
   };
   $('auto').onchange = (e) => act(() => call('setAutoRefresh', e.target.checked));
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('modal').hidden) closeModal(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('modal').hidden) { closeModal(); e.stopImmediatePropagation(); } });
   document.addEventListener('keydown', macroKey);
   document.addEventListener('pointerdown', () => { app.pointerDown = true; }, true);
   document.addEventListener('pointerup', () => {

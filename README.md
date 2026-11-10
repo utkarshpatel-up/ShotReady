@@ -71,6 +71,22 @@ are for at the top of the window:
 - **Assistant**: the camera last clicked on, which gets a blue outline. A camera on program cannot be
   selected or changed in this mode, and nothing can be changed while the ATEM is disconnected.
 
+## HDMI View Assist
+
+The Checks tab shows whether View Assist is on for each camera's HDMI output. When it is on the row is
+yellow, as the HDMI monitor then shows a converted picture instead of the Log picture, and **Turn off**
+switches it off. SDI is not affected.
+
+## Camera menu
+
+- **M** turns on the on-screen display of the camera the mode points at (Mixer: the one on preview,
+  Assistant: the selected one) and opens its main menu. It does nothing to a camera on program.
+- While the menu is open: **W** up, **A** left, **S** down, **D** right, **Space** to select, and
+  **Q** or **Esc** to go back a level. At the top level that closes the menu and leaves the display on.
+- **Esc** with no menu open turns the display off.
+
+With no menu open, W and S change ISO as usual. Nothing is sent to a camera on program.
+
 ## All-camera buttons
 
 At the top of the Checks tab:

@@ -155,6 +155,13 @@ const baseIsoOf = (info, keys) => {
   return Number(key ? info[key].match(/\d{3,}/)?.[0] : NaN);
 };
 
+// The View Assist setting of the camera's HDMI output, from f.output.list (output1:12g-sdi,output2:hdmi).
+export function hdmiViewAssistKey(info) {
+  const out = (info['f.output.list'] || '').split(',').map((x) => x.split(':')).find(([, kind]) => /hdmi/i.test(kind || ''))?.[0];
+  const key = out && `monitoring.${out}.viewassist`;
+  return key && key in info ? key : null;
+}
+
 // Mandatory settings on every camera. A value the camera reports decides the row. Anything it
 // does not report stays yellow until an operator confirms it, for this lens, today.
 export function mandatoryChecks(info, s, std, confirmed = {}, now = Date.now()) {
@@ -174,6 +181,12 @@ export function mandatoryChecks(info, s, std, confirmed = {}, now = Date.now()) 
     const bad = read.filter((k) => !m.want(info[k]));
     if (bad.length) rows.push({ status: 'red', check: m.check, detail: `${m.describe ? m.describe(info) : (m.show ? m.show(info[bad[0]]) : info[bad[0]])} (must be ${m.wantText})` });
     else rows.push({ status: 'green', check: m.check, detail: m.show ? m.show(info[read[0]]) : info[read[0]] });
+  }
+
+  const va = hdmiViewAssistKey(info);
+  if (va) {
+    if (/^off$/i.test(info[va])) rows.push({ status: 'green', check: 'HDMI View Assist', detail: 'OFF' });
+    else rows.push({ status: 'yellow', check: 'HDMI View Assist', detail: `ON${info[`${va}.type`] ? ` (${info[`${va}.type`]})` : ''}: the HDMI monitor does not show the Log picture` });
   }
 
   const base = baseIsoOf(info, keys);
@@ -311,6 +324,8 @@ export function checkFixes(info, standards) {
   if (on('digitalIS')) offer('Digital IS', 'Turn off', [[on('digitalIS'), 'off']]);
   if (on('teleConverter')) offer('Tele-converter', 'Turn off', [[on('teleConverter'), 'off']]);
   if (info['c.1.colorbar'] === 'on') offer('Color bars', 'Turn off', [['c.1.colorbar', 'off']]);
+  const va = hdmiViewAssistKey(info);
+  if (va && !/^off$/i.test(info[va])) offer('HDMI View Assist', 'Turn off', [[va, 'off']]);
   if ('c.1.gamma' in info && !std.allowedGamma.includes(info['c.1.gamma'])) {
     const offered = (info['c.1.gamma.list'] || '').split(',');
     const good = std.allowedGamma.find((g) => offered.includes(g));
