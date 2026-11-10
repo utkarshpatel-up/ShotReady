@@ -223,18 +223,16 @@ function powerOf(info) {
   return { battery: true, text: info['s.power.percent'] ? `Battery ${info['s.power.percent']}%` : 'Battery' };
 }
 
-// Whether focus can be pushed closer or further from here, and why not if it cannot.
+// Whether the camera takes focus actions. Its AF and lens settings are left to the camera to judge:
+// c.1.focus 'auto' is AF enabled, and 1-shot works there with Continuous AF off.
 export function focusDrive(info) {
   if (!(info['c.1.focus.action.list'] || '').split(',').includes('near')) return null;
-  if (info['c.1.lens.focus'] === 'mf') return { ok: false, why: 'The lens switch is on MF' };
-  if (info['c.1.focus'] === 'auto') return { ok: false, why: 'Continuous AF is on' };
   return { ok: true };
 }
 
-// Whether the AF frame can be placed from here. On Auto the camera picks the place itself.
+// Whether the AF frame can be placed from here. Anything else is left to the camera to refuse.
 export function focusFrame(info) {
   if (info['c.1.focus.frame.1.x.max'] === undefined) return null;
-  if (info['c.1.focus.frame.1'] === 'auto') return { ok: false, why: 'The AF frame is on Auto' };
   return { ok: true };
 }
 

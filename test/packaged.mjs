@@ -44,13 +44,14 @@ try {
   console.log('ok - password saved encrypted, not in plain text');
 
   await win.locator('#tabs button', { hasText: 'Dashboard' }).click();
-  await win.waitForFunction(() => /ATEM/.test(document.querySelector('.global')?.textContent || ''), null, { timeout: 60000 });
+  await win.waitForFunction(() => /ATEM/.test(document.querySelector('.atem-status')?.textContent || ''), null, { timeout: 60000 });
   // The library loads lazily: give it time, then read the status from a fresh check.
   await new Promise((r) => setTimeout(r, 5000));
   await win.locator('#check').click();
   await win.waitForFunction(() => document.querySelector('#check').textContent === 'Run check', null, { timeout: 60000 });
   await new Promise((r) => setTimeout(r, 500));
-  const g = await win.locator('.global').first().textContent();
+  const s = win.locator('.atem-status').first();
+  const g = `${await s.textContent()} ${await s.getAttribute('title')}`;
   assert.ok(!/failed to load/.test(g), g);
   console.log('ok - real ATEM library loaded in the running app; absent ATEM shows:', g);
   assert.ok(app.windows().some((w) => w.url().endsWith('bar.html')));

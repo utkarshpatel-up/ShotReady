@@ -38,6 +38,9 @@ main { flex: 1; overflow: auto; padding: 12px 14px; }
 .verdict { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-radius: 7px; margin-bottom: 10px; border: 1px solid transparent; }
 .verdict .big { font-size: 24px; font-weight: 700; letter-spacing: .3px; }
 .verdict .sub { color: var(--text); opacity: .85; }
+.verdict .atem-status { font-weight: 600; color: var(--dim); }
+.verdict .atem-status.on { color: var(--green); }
+.verdict .atem-status.off { color: var(--red); }
 .verdict .spacer { flex: 1; }
 .verdict.ready { background: var(--green-bg); border-color: var(--green); }
 .verdict.ready .big { color: var(--green); }

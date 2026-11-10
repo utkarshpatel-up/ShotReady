@@ -275,11 +275,9 @@ export class ShotReadyService extends EventEmitter {
     const seen = {};
     for (const [label, a] of Object.entries(this.state.assignments)) (seen[a.body] ||= []).push(label);
 
+    // The ATEM link is shown in the banner on its own and never counts toward the verdict.
     const atem = this.atemSummary();
     const global = [];
-    if (atem.configured && !atem.connected) global.push({ status: 'yellow', check: 'ATEM', detail: `Not connected${atem.error ? ` (${atem.error})` : ''}. Format and labels are not being checked against it.` });
-    if (atem.connected && atem.modeName && atem.modeName !== profile.atemMode) global.push({ status: 'red', check: 'ATEM format', detail: `ATEM is ${atem.modeLabel}, profile is ${profile.label}` });
-    if (atem.connected && atem.modeName === profile.atemMode) global.push({ status: 'green', check: 'ATEM format', detail: `ATEM is ${atem.modeLabel}` });
     // Empty labels alone are only a warning (a smaller show), but no cameras at all is never ready.
     if (!Object.keys(this.state.assignments).length) global.push({ status: 'red', check: 'No cameras', detail: 'No body is assigned to any label' });
     count(global);
@@ -299,10 +297,6 @@ export class ShotReadyService extends EventEmitter {
       const known = this.state.bodies[id] || {};
       const results = [...bodyIdentity(rb, known)];
       if (seen[id].length > 1) results.push({ status: 'red', check: 'Double assignment', detail: `${id} is also on ${seen[id].filter((l) => l !== loc.label).join(', ')}` });
-      if (atem.connected && loc.atemInput) {
-        const name = atem.inputs?.[loc.atemInput];
-        if (name !== undefined && name !== loc.label) results.push({ status: 'yellow', check: 'ATEM label', detail: `Input ${loc.atemInput} is named "${name}" on the ATEM` });
-      }
       let diffCount = 0;
       const ref = this.state.labelRef[loc.label];
       if (!rb.error) {
@@ -716,9 +710,7 @@ export class ShotReadyService extends EventEmitter {
     const frame = focusFrame(info);
     if (!frame?.ok) throw new Error(frame?.why || `${bodyId} cannot move its AF frame`);
     if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Unknown position');
-    // With Continuous AF on, moving the frame pulls focus straight away.
     const onAir = this.lastResult?.labels.find((l) => l.body === bodyId)?.tally?.program?.length;
-    if (onAir && info['c.1.focus'] === 'auto') throw new Error(`${bodyId} is on program with Continuous AF on, so the box was not moved`);
     const place = (n) => String(Math.round(Math.max(0, Math.min(1, n)) * 9999));
     await this.control(body, { 'c.1.focus.frame.1.x': place(x), 'c.1.focus.frame.1.y': place(y) });
     // Focusing on air would show on the program feed, so that stays a deliberate press of 1-Shot AF.
@@ -924,7 +916,7 @@ export class ShotReadyService extends EventEmitter {
   }
   atemStateKey() {
     const a = this.atemSummary();
-    return `${a.connected}|${a.modeName}`;
+    return `${a.connected}|${a.modeName}|${a.error || ''}`;
   }
   onAtemChange() {
     this.syncTally();
@@ -932,7 +924,7 @@ export class ShotReadyService extends EventEmitter {
     const key = this.atemStateKey();
     if (key !== this.atemKey) {
       this.atemKey = key;
-      if (a.configured) this.log(a.connected ? 'green' : 'yellow', a.connected ? `ATEM connected: ${a.modeLabel || 'reading'}` : 'ATEM not connected');
+      if (a.configured) this.log(a.connected ? 'green' : 'yellow', a.connected ? `ATEM connected: ${a.modeLabel || 'reading'}` : `ATEM not connected${a.error ? ` (${a.error})` : ` (no reply from ${a.ip})`}`);
       if (this.lastResult) this.check({ force: true }).catch(() => {});
     } else if (this.lastResult) {
       // Cut on the switcher: update program/preview without re-reading cameras.

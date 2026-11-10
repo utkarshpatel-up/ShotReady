@@ -395,7 +395,7 @@ function card(c) {
       h('dt', {}, 'Shutter'), h('dd', {}, s.shutterMode === 'speed' ? `1/${s.shutter}` : s.shutterMode),
       h('dt', {}, 'Focus'), h('dd', { title: 'The AF / MF switch on the lens' }, s.lensFocus === 'af' ? 'AF' : s.lensFocus === 'mf' ? 'MF' : '—'),
       h('dt', {}, 'WB'), h('dd', {}, s.wbMode === 'kelvin' ? `${s.wbKelvin} K${s.wbTint ? `  ·  Tint ${s.wbTint}` : ''}` : s.wbMode),
-      h('dt', {}, 'Continuous AF'), h('dd', { title: 'From the camera focus mode: auto is Continuous AF on, manual is off' }, s.focusMode === 'auto' ? 'ON' : s.focusMode === 'manual' ? 'OFF' : '—'),
+      h('dt', {}, 'Focus mode'), h('dd', { title: 'The focus mode as the camera reports it' }, s.focusMode || '—'),
       h('dt', {}, 'ISO'), h('dd', {}, s.iso, h('span', { class: 'nd' }, `  ·  ND ${s.nd}`)),
       h('dt', {}, 'People Priority'), h('dd', { title: DETECT_TIP[s.detect] || s.detect }, DETECT[s.detect] || s.detect || '—'),
       h('dt', { title: 'Peak and average level, calculated from the camera preview frame' }, 'WFM'), h('dd', { 'data-wfm': c.body }, fmtWave(app.waves[c.body])),
@@ -471,13 +471,15 @@ async function snapshot(label) {
 function banner(r) {
   const atem = app.atem;
   const liveText = r.live?.enabled ? `Live ${r.live.connected}/${r.live.total} cameras · ` : '';
-  const atemText = atem.connected ? `ATEM ${atem.modeLabel}` : atem.configured ? 'ATEM not connected' : 'No ATEM set';
+  const atemText = atem.connected ? 'ATEM connected' : atem.configured ? 'ATEM not connected' : 'No ATEM set';
+  const atemClass = atem.connected ? 'on' : atem.configured ? 'off' : '';
   return [
     h('div', { class: `verdict ${r.verdict}` },
       h('span', { class: 'big', id: 'verdict' }, VERDICT[r.verdict]),
       h('span', { class: 'sub' }, `${r.switcherName} · ${r.profile} (${r.profileLabel}) · ${r.reds} red · ${r.yellows} yellow`),
       h('span', { class: 'spacer' }),
-      h('span', { class: 'sub' }, `${liveText}${atemText} · updated ${new Date(r.time).toLocaleTimeString()}`)),
+      h('span', { class: `atem-status ${atemClass}`, title: atem.error || '' }, atemText),
+      h('span', { class: 'sub' }, `${liveText}updated ${new Date(r.time).toLocaleTimeString()}`)),
     r.global.filter((g) => g.status !== 'green').length ? h('div', { class: 'global' }, r.global.filter((g) => g.status !== 'green').map(row)) : '',
   ];
 }

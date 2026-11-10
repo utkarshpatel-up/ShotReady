@@ -60,7 +60,11 @@ export class AtemLink extends EventEmitter {
       this.emit('change');
     });
     atem.on('stateChanged', refresh);
-    atem.on('error', (msg) => { if (this.atem === atem) this.status.error = String(msg); });
+    atem.on('error', (msg) => {
+      if (this.atem !== atem) return;
+      this.status = { ...this.status, error: String(msg) };
+      this.emit('change');
+    });
     await atem.connect(ip);
   }
 
