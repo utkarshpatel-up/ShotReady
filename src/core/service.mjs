@@ -248,7 +248,13 @@ export class ShotReadyService extends EventEmitter {
       if (due) this.dupAt[b.id] = now;
       return this.readBody(b, { dupCheck: due });
     }));
-    this.reads = Object.fromEntries(reads.map((r) => [r.body.id, r]));
+    // A camera that pushed a change while these reads were out keeps what it pushed: the read began
+    // earlier, so it may still carry the old value (a display just turned off showing as on again).
+    this.pushedAt ||= {};
+    this.reads = Object.fromEntries(reads.map((r) => {
+      const prev = this.reads[r.body.id];
+      return [r.body.id, prev?.info && this.pushedAt[r.body.id] > now ? prev : r];
+    }));
     // If a lamp was changed by something else, set it again.
     for (const r of reads) {
       const sent = this.lampSent[r.body.id];
@@ -543,7 +549,10 @@ export class ShotReadyService extends EventEmitter {
     // the m. (read from a real C80: control.cgi refuses them with 406).
     const entries = Object.entries(params);
     const menu = entries.every(([k]) => k.startsWith('m.'));
-    const path = this.cfg.infoPath.replace(/info\.cgi$/, menu ? 'menu.cgi' : 'control.cgi');
+    // Monitoring and assist settings (View Assist and the like) go to configuration.cgi with their
+    // full names; control.cgi refuses them with 406 (read from a real C80).
+    const config = entries.every(([k]) => /^(monitoring|assist)\./.test(k));
+    const path = this.cfg.infoPath.replace(/info\.cgi$/, menu ? 'menu.cgi' : config ? 'configuration.cgi' : 'control.cgi');
     const query = new URLSearchParams(menu ? entries.map(([k, v]) => [k.slice(2), v]) : params);
     const res = await httpGet(`http://${body.ip}${path}?${query}`, this.authForRequests());
     const status = res.headers.get('livescope-status');
@@ -556,17 +565,37 @@ export class ShotReadyService extends EventEmitter {
   // ---------- tally from the ATEM to the camera lamps ----------
   tallyDriven(atem) { return this.cfg.tallyFromAtem !== false && !!atem.connected; }
 
+  // The moment a camera is taken to program, its on-screen display and any open menu come off, so
+  // they never stay on air. Runs on every ATEM change, before the lamps, and whatever the mode.
+  closeOsdOnAir() {
+    this.osdClosing ||= new Set();
+    for (const b of this.cfg.bodies) {
+      const info = this.reads[b.id]?.info;
+      if (!info || this.osdClosing.has(b.id)) continue;
+      const showing = info['m.onscreen'] === 'on' || (info['m.menu.type'] || '0') !== '0';
+      if (!showing || !this.isLive(b.id)) continue;
+      this.osdClosing.add(b.id);
+      // Display off first: that alone clears the picture. Then the menu is closed as well.
+      this.control(b, { 'm.onscreen': 'off' })
+        .then(() => { info['m.onscreen'] = 'off'; return this.control(b, { 'm.type': '0' }); })
+        .then(() => { info['m.menu.type'] = '0'; this.log('yellow', `${b.id} went to program: display and menu turned off`); })
+        .catch((e) => this.log('red', `${b.id} went to program but its display could not be turned off: ${e.message}`))
+        .finally(() => { this.osdClosing.delete(b.id); this.check({ force: true }).catch(() => {}); });
+    }
+  }
+
   syncTally() {
+    if (this.liveEnabled) this.closeOsdOnAir();
     if (!this.liveEnabled || this.cfg.tallyFromAtem === false) return;
     const atem = this.atemSummary();
     const me = atem.mixEffects?.[0];
     const tally = atem.tally || (me ? { program: [me.program], preview: [me.preview] } : null);
     const wanted = {};
     if (atem.connected && tally) {
-      this.cfg.locations.forEach((loc, i) => {
+      this.cfg.locations.forEach((loc) => {
         const id = this.state.assignments[loc.label]?.body;
         if (!id) return;
-        const input = Number(loc.atemInput) || i + 1;
+        const input = this.atemInputOf(loc);
         wanted[id] = tally.program.includes(input) ? 'program' : tally.preview.includes(input) ? 'preview' : 'off';
       });
     }
@@ -617,7 +646,7 @@ export class ShotReadyService extends EventEmitter {
     const label = this.labelOfBody(id);
     const atem = this.atemSummary();
     if (!label || !atem.connected) return false;
-    const input = Number(this.findLocation(label)?.atemInput) || this.cfg.locations.findIndex((l) => l.label === label) + 1;
+    const input = this.atemInputOf(this.findLocation(label));
     return !!(atem.tally?.program?.includes(input) || atem.mixEffects?.some((m) => m.program === input));
   }
 
@@ -640,6 +669,76 @@ export class ShotReadyService extends EventEmitter {
     this.state.keyMode = mode;
     this.saveState();
     return mode;
+  }
+
+  // ---------- camera menu from the keyboard ----------
+  // M: display on and main menu open, on the camera the mode points at (never one on program).
+  // W A S D and Space move and select while a menu is open. Q and Esc go back a level, and at the
+  // top level that closes the menu. Esc with no menu open turns the display off.
+  // Canon XC spec, menu.cgi: cmd=up|down|left|right|enter|cancel moves and selects, and type picks
+  // the screen (0 none, 1 MENU, 2 Custom Picture, 3 FUNC). Checked on a real C80: one cancel at the
+  // top level closes the menu. m.menu.type is not exact while a screen is open, so any value other
+  // than 0 counts as open.
+  // Presses run one at a time so a quick run of taps lands in order.
+  menuKey(key, selected) {
+    const run = (this.menuChain || Promise.resolve()).catch(() => {}).then(() => this.#menuKey(key, selected));
+    this.menuChain = run;
+    return run;
+  }
+
+  osdCameras() {
+    return this.cfg.bodies.filter((b) => this.reads[b.id]?.info?.['m.onscreen'] === 'on').map((b) => b.id);
+  }
+
+  // The camera the mode points at: Assistant, the selected one; Mixer, the one on preview.
+  #modeCamera(selected) {
+    if (this.state.keyMode === 'assistant') {
+      if (!selected) throw new Error('Click a camera to select it first');
+      return selected;
+    }
+    const cam = this.previewCamera();
+    if (!cam) throw new Error('No camera on preview');
+    return cam.body;
+  }
+
+  // Asked fresh each time: the menu is opened and closed on the camera too.
+  async #menuState(id) {
+    const body = this.findBody(id);
+    const res = await httpGet(`http://${body.ip}${this.cfg.infoPath}?item=m.menu.type&item=m.onscreen`, this.authForRequests());
+    if (!res.ok) throw new Error(`${id}: HTTP ${res.status}`);
+    const got = parseInfo(await res.text());
+    return { type: got['m.menu.type'] || '0', osd: got['m.onscreen'] === 'on' };
+  }
+
+  async #menuKey(key, selected) {
+    if (key === 'open') {
+      const id = this.#modeCamera(selected);
+      if (this.isLive(id)) throw new Error(`${id} is on program: the display and menu were not turned on`);
+      this.#guardLive(id);
+      if (this.reads[id]?.info?.['m.onscreen'] !== 'on') await this.setControl(id, 'm.onscreen', 'on');
+      await this.control(this.findBody(id), { 'm.type': '1' });
+      this.log('info', `${id}: menu opened`);
+      return { body: id, did: 'open' };
+    }
+    if (!['up', 'down', 'left', 'right', 'enter', 'back', 'escape'].includes(key)) throw new Error('Unknown menu key');
+    const on = this.osdCameras();
+    if (!on.length) return null;
+    const preview = this.previewCamera()?.body;
+    const id = on.includes(selected) ? selected : on.includes(preview) ? preview : on.length === 1 ? on[0] : null;
+    if (!id) throw new Error(`The display is on for ${on.join(', ')}: select one to use the menu keys`);
+    // The menu would show on the program feed.
+    if (this.isLive(id)) throw new Error(`${id} is on program: menu keys are not sent`);
+    const body = this.findBody(id);
+    const { type } = await this.#menuState(id);
+    if (type === '0') {
+      // No menu open: Esc turns the display off, the other keys are left for their normal use.
+      if (key !== 'escape') return null;
+      await this.setControl(id, 'm.onscreen', 'off');
+      return { body: id, did: 'osd off' };
+    }
+    const press = key === 'back' || key === 'escape' ? 'cancel' : key;
+    await this.control(body, { 'm.cmd': press });
+    return { body: id, did: press };
   }
 
   // One ISO step. Run one at a time so quick taps each move a full step.
@@ -691,9 +790,10 @@ export class ShotReadyService extends EventEmitter {
     const body = this.findBody(bodyId);
     const info = this.reads[bodyId]?.info;
     if (!body || !info) throw new Error(`${bodyId} is not online`);
-    // A stop always goes through, even if the camera went live while focus was moving.
+    // A stop always goes through, even if the camera went live while focus was moving. 1-Shot AF is
+    // a deliberate press, so it works in Mixer and Assistant mode alike, live or not.
     if (dir !== 'stop') {
-      this.#guardLive(bodyId);
+      if (dir !== 'one_shot') this.#guardLive(bodyId);
       const drive = focusDrive(info);
       if (!drive?.ok) throw new Error(drive?.why || `${bodyId} cannot move focus`);
     }
@@ -871,6 +971,7 @@ export class ShotReadyService extends EventEmitter {
     if (!changed) return;
     const info = { ...base, ...items };
     this.reads[body.id] = { body, info, summary: summarize(info), dupMacs: prev?.dupMacs || null };
+    (this.pushedAt ||= {})[body.id] = Date.now();
     this.scheduleEvaluate();
   }
 
@@ -917,10 +1018,21 @@ export class ShotReadyService extends EventEmitter {
     if (!this.atem) return { configured: false, connected: false };
     return { ...this.atem.status, ...(this.atem.data || {}) };
   }
+  atemInputOf(loc) {
+    if (!loc) return 0;
+    return Number(loc.atemInput) || this.cfg.locations.findIndex((l) => l.label === loc.label) + 1;
+  }
+
+  // Which M/Es have this label's input on program and on preview. A source that only shows through
+  // a key still counts as on program, the same as for the camera lamp.
   atemTally(loc, atem) {
-    if (!atem.connected || !loc.atemInput || !atem.mixEffects) return null;
-    const on = (k) => atem.mixEffects.flatMap((m, i) => (m[k] === Number(loc.atemInput) ? [i + 1] : []));
-    return { program: on('program'), preview: on('preview'), input: Number(loc.atemInput) };
+    const input = this.atemInputOf(loc);
+    if (!atem.connected || !input || !atem.mixEffects) return null;
+    const on = (k) => {
+      const list = atem.mixEffects.flatMap((m, i) => (m[k] === input ? [i + 1] : []));
+      return !list.length && atem.tally?.[k]?.includes(input) ? [1] : list;
+    };
+    return { program: on('program'), preview: on('preview'), input };
   }
   atemStateKey() {
     const a = this.atemSummary();

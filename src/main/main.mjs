@@ -169,6 +169,7 @@ const api = {
   setControl: (id, key, value) => svc.setControl(id, key, value),
   setRecord: (id, on) => svc.setRecord(id, on),
   stepIso: (dir, id) => svc.stepIso(dir > 0 ? 1 : -1, id),
+  menuKey: (key, id) => svc.menuKey(key, id),
   setKeyMode: (mode) => svc.setKeyMode(mode),
   applyFix: (id, check) => svc.applyFix(id, check),
   moveFocus: (id, dir) => svc.moveFocus(id, dir),
