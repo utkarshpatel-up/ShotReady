@@ -1178,12 +1178,13 @@ async function renderSettings() {
 }
 
 // ---------- video out ----------
-// Plays a video to the HDMI display through the inverse LUT. The tab is rebuilt when something
+// Plays a video to the HDMI display through the inverse LUT, or sends a screen live through a LUT
+// picked for it (the Screen source). The tab is rebuilt when something
 // about the set-up changes; while a clip plays only the time and the play button are updated, so
 // dragging the position bar is not interrupted.
 const vo = {};
 const clock = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
-const voKey = (s) => JSON.stringify([s.displays.map((d) => [d.id, d.width, d.height, d.hz]), s.target?.id, s.chosen, s.on, s.open, s.lut, s.file, s.error, s.warning, s.settings, s.lutMissing, s.outputNote, s.cued, s.baked, s.queue.map((q) => [q.id, q.state, q.error])]);
+const voKey = (s) => JSON.stringify([s.displays.map((d) => [d.id, d.width, d.height, d.hz]), s.target?.id, s.chosen, s.on, s.open, s.lut, s.file, s.error, s.warning, s.settings, s.lutMissing, s.outputNote, s.cued, s.baked, s.queue.map((q) => [q.id, q.state, q.error]), s.source, s.screen?.id, s.screenChosen, s.overlay, s.screenLut, s.screenLuts, s.screenLutMissing, s.shortcut]);
 // What a queued clip's LUT comes from: applied live, or already in a pre-processed copy.
 function queueState(q) {
   switch (q.state) {
@@ -1206,11 +1207,18 @@ async function audioOutputs() {
 function paintVideoOut(s) {
   if (!vo.play) return;
   for (const q of s.queue) { const cell = document.querySelector(`[data-q="${q.id}"]`); if (cell) cell.textContent = queueState(q); }
-  vo.play.textContent = s.playing ? '❚❚ Pause' : '▶ Play';
+  // While the screen is sent, the player stays where the clip was.
+  const clip = s.source !== 'screen';
+  vo.play.textContent = s.playing && clip ? '❚❚ Pause' : '▶ Play';
+  if (!clip) return paintLive(s);
   vo.time.textContent = s.file ? `${clock(s.position)} / ${clock(s.duration)}` : '';
   if (!vo.dragging) { vo.seek.max = String(s.duration || 0); vo.seek.value = String(s.position || 0); }
   vo.seek.disabled = !s.file || !s.duration;
-  vo.live.textContent = s.playing ? 'PLAYING' : s.open ? 'OUTPUT ON · black' : '';
+  paintLive(s);
+}
+
+function paintLive(s) {
+  vo.live.textContent = s.playing ? (s.source === 'screen' ? 'SENDING THE SCREEN' : 'PLAYING') : s.open ? (s.source === 'screen' ? 'OUTPUT ON · starting' : 'OUTPUT ON · black') : '';
   vo.live.className = `vo-live${s.playing ? ' on' : ''}`;
 }
 
@@ -1221,13 +1229,20 @@ async function renderVideoOut() {
   vo.key = voKey(s);
   const send = (cmd, arg) => act(() => call('playout', cmd, arg));
   const t = s.target;
-  const choices = s.displays.filter((d) => !d.primary || d.id === t?.id);
+  const screenOut = s.source === 'screen';
+  // The main display can take the screen (covered by its own picture through the LUT), never clips.
+  const choices = s.displays.filter((d) => screenOut || !d.primary || d.id === t?.id);
   const describe = (d) => `${d.label}${d.internal ? ' (built-in)' : ''} · ${d.width}×${d.height}${d.hz ? ` ${d.hz} Hz` : ''}${d.primary ? ' · main display' : ''}`;
+  const isChosen = (want, d) => want?.id === d.id || want?.label === d.label;
   const displaySel = h('select', { 'aria-label': 'Output display', onchange: (e) => { const d = s.displays.find((x) => String(x.id) === e.target.value); send('display', d ? { id: d.id, label: d.label } : null); } },
-    h('option', { value: '', selected: !s.chosen }, 'First display other than this one'),
-    choices.map((d) => h('option', { value: String(d.id), selected: s.chosen?.id === d.id || s.chosen?.label === d.label }, describe(d))));
-  const outputState = !t ? h('span', { class: 'err' }, s.chosen ? `${s.chosen.label} is not connected` : 'No second display: plug the HDMI output in. It shows here as soon as Windows sees it.')
+    h('option', { value: '', selected: !s.chosen }, screenOut ? 'First display other than this one, or this one if it is the only one' : 'First display other than this one'),
+    choices.map((d) => h('option', { value: String(d.id), selected: isChosen(s.chosen, d) }, describe(d))));
+  const chosenMain = !screenOut && s.chosen && s.displays.find((d) => isChosen(s.chosen, d))?.primary;
+  const outputState = !t ? h('span', { class: 'err' }, chosenMain ? `${s.chosen.label} is the main display: clips cannot play out on it. Pick the HDMI display, or send the screen instead.` : s.chosen ? `${s.chosen.label} is not connected` : 'No second display: plug the HDMI output in. It shows here as soon as Windows sees it.')
     : h('span', { class: 'tag-ok' }, `Output display: ${describe(t)}`);
+  const sourceSel = h('select', { 'aria-label': 'What goes out', onchange: (e) => send('source', e.target.value) },
+    h('option', { value: 'clips', selected: !screenOut }, 'Videos from the queue'),
+    h('option', { value: 'screen', selected: screenOut }, 'A screen, live, through a LUT'));
   const lutRange = (which) => h('select', { 'aria-label': `Video out LUT ${which}`, disabled: !s.lut, onchange: () => act(() => call('playoutLutRange', vo.lutIn.value, vo.lutOut.value)) },
     h('option', { value: 'full', selected: s.lut?.[which] !== 'legal' }, 'Full'), h('option', { value: 'legal', selected: s.lut?.[which] === 'legal' }, 'Legal (video levels)'));
   vo.lutIn = lutRange('input');
@@ -1235,7 +1250,7 @@ async function renderVideoOut() {
   const apply = h('input', { type: 'checkbox', checked: s.settings.applyLut !== false, onchange: (e) => send('applyLut', e.target.checked) });
   // Play is never held back: a missing LUT is said, and the video goes out as it is.
   vo.play = h('button', { class: 'primary', disabled: !s.file, onclick: async () => {
-    const r = await send(app.playout?.playing ? 'pause' : 'play');
+    const r = await send(app.playout?.playing && app.playout.source !== 'screen' ? 'pause' : 'play');
     if (r?.playing === false && r.lutMissing) toast('Playing without a LUT: the video goes out as it is, in colour. Load the inverse LUT, or untick Apply LUT if that is what you want.', true);
   } }, '▶ Play');
   vo.time = h('span', { class: 'mono' });
@@ -1254,11 +1269,13 @@ async function renderVideoOut() {
 
   show(scrollNow(), h('div', { class: 'form' },
     h('div', { class: 'section' }, h('h2', {}, 'Output'),
+      h('div', { class: 'vo-row' }, h('label', {}, 'Send ', sourceSel)),
       h('div', { class: 'vo-row' }, displaySel,
         h('button', { class: s.on ? 'on-btn' : '', disabled: !t && !s.on, onclick: () => send('on', !s.on) }, s.on ? 'Output on' : 'Output off'), vo.live),
       h('p', {}, outputState),
       s.warning ? h('p', { class: 'warn-text' }, s.warning) : null,
-      h('p', { class: 'hint' }, `The output display shows only the video, full screen, with no cursor; black when nothing plays. ${laptop ? `It goes into ATEM input ${laptop} (Laptop video, Settings > Labels): no tally is shown or sent for it.` : 'Set the switcher input it goes into as Laptop video in Settings > Labels, so no camera\'s tally follows that input.'}`)),
+      h('p', { class: 'hint' }, `${screenOut ? 'The output display shows the screen picked below, through its LUT.' : 'The output display shows only the video, full screen, with no cursor; black when nothing plays.'} ${laptop ? `It goes into ATEM input ${laptop} (Laptop video, Settings > Labels): no tally is shown or sent for it.` : 'Set the switcher input it goes into as Laptop video in Settings > Labels, so no camera\'s tally follows that input.'}`)),
+    screenOut ? screenSection(s, send, describe, isChosen) : null,
     h('div', { class: 'section' }, h('h2', {}, 'Inverse LUT'),
       h('div', { class: 'vo-row' },
         s.lut ? h('strong', {}, `${s.lut.name} (${s.lut.size}-point)`) : h('span', { class: s.lutMissing ? 'err' : 'empty' }, s.lutMissing ? 'None loaded: the video goes out as it is, in colour' : 'None loaded'),
@@ -1299,12 +1316,50 @@ async function renderVideoOut() {
         h('button', { disabled: !s.file || s.queue[s.queue.length - 1]?.id === s.cued, onclick: () => send('next') }, '⏭ Next'),
         h('label', { class: 'check' }, loop, ' Loop'), vo.time),
       vo.seek,
-      s.error ? h('p', { class: 'err' }, s.error) : null,
+      s.error && !screenOut ? h('p', { class: 'err' }, s.error) : null,
+      screenOut ? h('p', { class: 'hint' }, 'The screen is being sent: Play sends the clip in the player instead.') : null,
       h('p', { class: 'hint' }, 'MP4 (H.264 or HEVC) and WebM play. ProRes, DNxHR and MXF do not: convert those to MP4 first. The picture is scaled to the output display, keeping its shape.')),
     h('div', { class: 'section' }, h('h2', {}, 'Audio'),
       h('div', { class: 'vo-row' }, audioSel, h('label', {}, 'Volume ', volume)),
       h('p', { class: 'hint' }, named.length ? 'Sound goes to the output picked here, not over HDMI.' : 'The computer does not name its audio outputs here, so the sound goes to its default output. Make the audio jack the default in Windows (Settings > System > Sound) if HDMI is.'))));
   paintVideoOut(s);
+}
+
+// The Screen source: which display goes out, and the LUT it goes through.
+function screenSection(s, send, describe, isChosen) {
+  const src = s.screen, t = s.target, luts = s.screenLuts || {}, choice = s.screenLut?.choice || 'video';
+  const screenSel = h('select', { 'aria-label': 'Screen to send', onchange: (e) => { const d = s.displays.find((x) => String(x.id) === e.target.value); send('screen', d ? { id: d.id, label: d.label } : null); } },
+    h('option', { value: '', selected: !s.screenChosen }, 'The main display'),
+    s.displays.map((d) => h('option', { value: String(d.id), selected: isChosen(s.screenChosen, d) }, describe(d))));
+  const named = (l) => (l ? ` (${l.name})` : ': none loaded');
+  const gammas = Object.entries(luts.gammas || {});
+  const lutSel = h('select', { 'aria-label': 'Screen LUT', onchange: (e) => send('screenLut', e.target.value) },
+    h('option', { value: 'video', selected: choice === 'video' }, `The inverse LUT, as for clips${named(luts.video)}`),
+    gammas.map(([g, l]) => h('option', { value: `gamma:${g}`, selected: choice === `gamma:${g}` }, `The ${g} monitoring LUT (${l.name})`)),
+    choice.startsWith('gamma:') && !luts.gammas?.[choice.slice(6)] ? h('option', { value: choice, selected: true }, `The ${choice.slice(6)} monitoring LUT: no longer loaded`) : null,
+    h('option', { value: 'own', selected: choice === 'own' }, `A LUT of its own${named(luts.own)}`),
+    h('option', { value: 'none', selected: choice === 'none' }, 'None: the screen as it is'));
+  const own = luts.own;
+  const range = (which) => h('select', { 'aria-label': `Screen LUT ${which}`, disabled: !own, onchange: () => act(() => call('screenLutRange', vo.sIn.value, vo.sOut.value)) },
+    h('option', { value: 'full', selected: own?.[which] !== 'legal' }, 'Full'), h('option', { value: 'legal', selected: own?.[which] === 'legal' }, 'Legal (video levels)'));
+  vo.sIn = range('input');
+  vo.sOut = range('output');
+  const where = !src ? h('p', { class: 'err' }, s.screenChosen ? `${s.screenChosen.label} is not connected: nothing goes out` : 'No display to send')
+    : !t ? h('p', { class: 'empty' }, 'Pick the output display above.')
+      : s.overlay ? h('p', { class: 'tag-ok' }, `${src.label} shows itself through the LUT, and that is what goes out${src.primary ? ': with a single display this is the one you work on, and its picture follows you live' : ''}. Clicks and typing go through to the apps under it.`)
+        : h('p', { class: 'tag-ok' }, `${src.label} goes out on ${t.label} through the LUT, live.`);
+  return h('div', { class: 'section' }, h('h2', {}, 'Screen'),
+    h('div', { class: 'vo-row' }, h('label', {}, 'Screen to send ', screenSel), h('label', {}, 'LUT ', lutSel)),
+    where,
+    choice === 'own' ? h('div', { class: 'vo-row' },
+      own ? h('strong', {}, `${own.name} (${own.size}-point)`) : h('span', { class: 'err' }, 'None loaded'),
+      h('button', { onclick: () => act(() => call('screenLutLoad')) }, own ? 'Replace…' : 'Load .cube…'),
+      own ? h('button', { onclick: () => act(() => call('screenLutClear')) }, 'Remove') : null,
+      h('label', {}, 'LUT input ', vo.sIn), h('label', {}, 'LUT output ', vo.sOut)) : null,
+    s.screenLutMissing ? h('p', { class: 'err' }, 'That LUT is not loaded: the screen goes out as it is, in colour.') : null,
+    s.error ? h('p', { class: 'err' }, s.error) : null,
+    s.outputNote ? h('p', { class: 'warn-text' }, s.outputNote) : null,
+    h('p', { class: 'hint' }, `Every frame of the screen goes through the LUT on the graphics card, as a clip does, cursor included. Pick the same display as the output (with one display, that is the only choice) and ShotReady covers it with its own picture through the LUT, so what you see is what goes out; the window is kept out of the capture, which needs Windows 10 version 2004 or later. ${s.shortcut ? `${s.shortcut} turns the screen output off from any app.` : 'Another app holds Ctrl+Shift+F12, so turn the screen output off here.'} The inverse LUT and monitoring LUTs keep their input and output ranges from where they are loaded.`));
 }
 
 // ---------- live stream ----------

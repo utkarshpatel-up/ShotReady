@@ -21,7 +21,7 @@ writeFileSync(redLut, ['LUT_3D_SIZE 2', ...Array(8).fill('1.0 0.0 0.0')].join('\
 // Chromium's software GPU stands in for a graphics card, so the LUT view runs on a test machine too.
 const app = await electron.launch({
   executablePath: electronPath, args: ['.', '--demo', `--data-dir=${data}`, '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
-  env: { ...process.env, SHOTREADY_TEST_LUT: redLut, SHOTREADY_TEST_PLAYOUT: '1', SHOTREADY_TEST_VIDEO: `${resolve('test/fixtures/bars.webm')}|${resolve('test/fixtures/bars.mp4')}`, SHOTREADY_TEST_PLAYOUT_LUT: redLut, SHOTREADY_TEST_STREAM_AUDIO: 'opus' },
+  env: { ...process.env, SHOTREADY_TEST_LUT: redLut, SHOTREADY_TEST_PLAYOUT: '1', SHOTREADY_TEST_VIDEO: `${resolve('test/fixtures/bars.webm')}|${resolve('test/fixtures/bars.mp4')}`, SHOTREADY_TEST_PLAYOUT_LUT: redLut, SHOTREADY_TEST_SCREEN_LUT: redLut, SHOTREADY_TEST_STREAM_AUDIO: 'opus' },
 });
 const pageOf = async (name) => {
   for (let i = 0; i < 300; i++) {
@@ -309,6 +309,30 @@ try {
   await win.locator('button', { hasText: 'Output on' }).click();
   for (let i = 0; i < 50 && app.windows().some((w) => w.url().endsWith('playout.html')); i++) await sleep(100);
   assert.equal(app.windows().some((w) => w.url().endsWith('playout.html')), false, 'the output window closes when the output is turned off');
+
+  // The Screen source: with one display, it covers that display with its own picture through the LUT.
+  await win.locator('select[aria-label="What goes out"]').selectOption('screen');
+  await win.waitForFunction(() => /shows itself through the LUT/.test(document.getElementById('view').textContent), null, { timeout: 5000 });
+  assert.match(await section('Screen').textContent(), /The inverse LUT, as for clips \(red-test\.cube\)/);
+  await win.locator('button', { hasText: 'Output off' }).click();
+  const screenOut = await pageOf('playout.html');
+  await win.waitForFunction(() => /SENDING THE SCREEN/.test(document.querySelector('.vo-live')?.textContent || ''), null, { timeout: 10000 });
+  await sleep(800);
+  const sent = await shotColour(await screenOut.screenshot());
+  assert.ok(sent.r > 200 && sent.g < 40, `the screen goes out through the LUT (${JSON.stringify(sent)})`);
+  await screenOut.screenshot({ path: join(shots, '9b-video-out-screen.png') });
+  await win.locator('select[aria-label="Screen LUT"]').selectOption('own');
+  await win.waitForFunction(() => /That LUT is not loaded/.test(document.getElementById('view').textContent), null, { timeout: 5000 });
+  await section('Screen').locator('button', { hasText: 'Load .cube…' }).click();
+  await win.waitForFunction(() => /red-test\.cube \(2-point\)/.test([...document.querySelectorAll('.section')].find((x) => x.querySelector('h2')?.textContent === 'Screen')?.textContent || ''), null, { timeout: 5000 });
+  await win.screenshot({ path: join(shots, '9c-video-out-screen-tab.png') });
+  // Play sends the clip in the player instead.
+  await win.locator('button', { hasText: '▶ Play' }).click();
+  await win.waitForFunction(() => document.querySelector('select[aria-label="What goes out"]')?.value === 'clips' && /PLAYING/.test(document.querySelector('.vo-live')?.textContent || ''), null, { timeout: 10000 });
+  await win.locator('button', { hasText: 'Output on' }).click();
+  for (let i = 0; i < 50 && app.windows().some((w) => w.url().endsWith('playout.html')); i++) await sleep(100);
+  assert.equal(app.windows().some((w) => w.url().endsWith('playout.html')), false);
+  ok('video out, screen: one display shows itself through the picked LUT, its own LUT loads, Play goes back to clips');
   await tab('Dashboard');
   ok('queue: the next clip plays by itself at the end of one, clips can be removed, and the output closes when off');
 

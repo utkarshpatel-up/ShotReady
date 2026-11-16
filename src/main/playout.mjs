@@ -8,7 +8,14 @@
 // here ever holds the output back: a format that differs, a missing LUT or a graphics chip that
 // cannot apply one are all said on the Video out tab, and the video still goes out. The output may
 // feed an LED wall, or a mixer that matches frame rates itself.
-import { BrowserWindow, screen } from 'electron';
+//
+// The Screen source sends a display instead of a clip, live, through a LUT picked for it: whatever is
+// on that screen (slides, a browser, a document) goes out graded like a clip. With the source display
+// apart from the output display, the output shows a copy of it. With the two the same, a single
+// display included, the window covers that display with its own picture through the LUT: it is kept
+// out of the capture (Windows 10 version 2004 or later), so it never films itself, and clicks go
+// through it to the apps under it. A key turns it off from anywhere.
+import { BrowserWindow, screen, desktopCapturer, globalShortcut } from 'electron';
 import { EventEmitter } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { basename, join } from 'node:path';
@@ -16,16 +23,22 @@ import { existsSync, mkdirSync, statSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 export const SHOW_FORMAT = { '4K25': { width: 3840, height: 2160, hz: 25 }, HD25: { width: 1920, height: 1080, hz: 25 } };
+// Turns the Screen source's output off from any app, as its picture may cover the only display.
+export const SCREEN_OFF_KEY = 'CommandOrControl+Shift+F12';
+export const SCREEN_OFF_LABEL = 'Ctrl+Shift+F12';
 
 export class Playout extends EventEmitter {
   /**
    * @param o.page          the output page (playout.html)
    * @param o.preload       the preload script
-   * @param o.settings()    saved choices: { display: { id, label }, audio: { id, label }, volume, loop, applyLut }
+   * @param o.settings()    saved choices: { display: { id, label }, audio: { id, label }, volume, loop, applyLut,
+   *                        source: 'clips' | 'screen', screen: { id, label }, screenLut: 'video' | 'own' | 'gamma:<gamma>' | 'none' }
    * @param o.save(patch)   saves changed choices
    * @param o.profile()     the show profile, 4K25 or HD25
    * @param o.lut()         the inverse LUT's data, or null
    * @param o.lutView()     the inverse LUT's name and ranges, or null
+   * @param o.screenLuts()  the LUTs the Screen source can use: { video, own, gammas: { [gamma]: view } }
+   * @param o.screenLutData(choice)  the data of one of them, or null
    * @param o.allowPrimary  allow the main display as the output (tests only)
    * @param o.preprocessor  the background pre-processing (Preprocessor)
    * @param o.outDir        where pre-processed files are kept
@@ -34,8 +47,9 @@ export class Playout extends EventEmitter {
     super();
     Object.assign(this, o);
     this.win = null;
-    this.winDisplay = null;
+    this.winKey = null;
     this.on_ = false;
+    this.shortcut = null; // the screen-off key while it is held, false when another app has it
     this.media = { playing: false, position: 0, duration: 0, error: null, outputNote: null, ended: false };
     // The queue: the clips to play, in order, each with its pre-processing state. Kept between runs.
     this.ids = 0;
@@ -60,14 +74,45 @@ export class Playout extends EventEmitter {
     }));
   }
 
+  source() { return this.settings().source === 'screen' ? 'screen' : 'clips'; }
+
   // The output display: the one chosen in ShotReady (by its id, or by its name after a restart),
-  // never the main display. With none chosen, the first other display. A chosen display that is not
-  // connected means no output, rather than video on a screen nobody picked.
+  // never the main display for clips. With none chosen, the first other display; for the Screen
+  // source, the main display when it is the only one. A chosen display that is not connected means no
+  // output, rather than video on a screen nobody picked.
   target() {
-    const usable = this.displays().filter((d) => this.allowPrimary || !d.primary);
+    const all = this.displays(), screenOut = this.source() === 'screen';
+    const usable = all.filter((d) => this.allowPrimary || screenOut || !d.primary);
     const want = this.settings().display;
     if (want) return usable.find((d) => d.id === want.id) || usable.find((d) => d.label === want.label) || null;
+    if (screenOut) return all.find((d) => !d.primary) || all[0] || null;
     return usable[0] || null;
+  }
+
+  // The display the Screen source sends: the one chosen, else the main display.
+  screenSource() {
+    const all = this.displays(), want = this.settings().screen;
+    if (want) return all.find((d) => d.id === want.id) || all.find((d) => d.label === want.label) || null;
+    return all.find((d) => d.primary) || all[0] || null;
+  }
+
+  screenLutChoice() {
+    const c = this.settings().screenLut;
+    return c === 'own' || c === 'none' || /^gamma:/.test(c || '') ? c : 'video';
+  }
+
+  screenLutView() {
+    const c = this.screenLutChoice(), views = this.screenLuts?.() || {};
+    if (c === 'none') return null;
+    if (c.startsWith('gamma:')) return views.gammas?.[c.slice(6)] || null;
+    return views[c] || null;
+  }
+
+  // The LUT the output window applies: the inverse LUT for clips, the one picked for the screen.
+  currentLut() {
+    if (this.source() !== 'screen') return this.lut();
+    const c = this.screenLutChoice();
+    return c === 'none' ? null : this.screenLutData?.(c) || null;
   }
 
   formatWarning(t) {
@@ -155,7 +200,7 @@ export class Playout extends EventEmitter {
     this.media = { ...this.media, playing: false, position: 0, duration: 0, error: null, ended: false };
     if (q) {
       const baked = this.isBaked(q);
-      this.send({ type: 'load', url: pathToFileURL(baked ? q.pre.output : q.file).href, position: 0, loop: !!this.settings().loop, baked });
+      this.clipSend({ type: 'load', url: pathToFileURL(baked ? q.pre.output : q.file).href, position: 0, loop: !!this.settings().loop, baked });
       if (play) this.command('play');
     }
     this.emitStatus();
@@ -164,7 +209,14 @@ export class Playout extends EventEmitter {
   status() {
     const t = this.target();
     const q = this.cuedItem();
+    const src = this.screenSource();
+    const screenOut = this.source() === 'screen';
     return {
+      source: this.source(), screen: src, screenChosen: this.settings().screen || null,
+      overlay: !!(screenOut && src && t && src.id === t.id),
+      screenLut: { choice: this.screenLutChoice(), view: this.screenLutView() }, screenLuts: this.screenLuts?.() || {},
+      screenLutMissing: this.screenLutChoice() !== 'none' && !this.screenLutView(),
+      shortcut: this.shortcut === false ? null : SCREEN_OFF_LABEL, // null: another app holds the key
       file: q?.file || null, name: q?.name || null, cued: this.cued, baked: this.isBaked(q),
       queue: this.queue.map((x) => ({ id: x.id, name: x.name, file: x.file, state: this.preState(x), progress: x.pre.progress || 0, speed: x.pre.speed || 0, error: x.pre.error || null, info: x.pre.info || null, mp4: /\.(mp4|m4v|mov)$/i.test(x.file) })),
       displays: this.displays(), target: t, chosen: this.settings().display || null, on: this.on_, open: !!this.win,
@@ -176,22 +228,29 @@ export class Playout extends EventEmitter {
   emitStatus() { this.emit('status', this.status()); }
 
   send(msg) { if (this.win && !this.win.isDestroyed()) this.win.webContents.send('shotready:playout', msg); }
+  // Clip commands go to a window playing clips only, never into a screen being sent.
+  clipSend(msg) { if (this.source() === 'clips') this.send(msg); }
 
   // Opens, moves or closes the output window to match: output on, and the output display present.
+  // For the Screen source, the source display must be there too. A window is opened again when what
+  // it shows changes (the source, or the size of the display sent); otherwise it is only moved.
   reconcile() {
     const t = this.target();
-    if (this.on_ && t) this.openOn(t);
+    const src = this.source() === 'screen' ? this.screenSource() : null;
+    if (this.on_ && t && (this.source() === 'clips' || src)) this.openOn(t, src);
     else this.close();
     this.emitStatus();
   }
 
-  openOn(d) {
+  openOn(d, src = null) {
+    const key = src ? `screen|${d.id}|${src.id}|${src.width}x${src.height}` : `clips|${d.id}`;
     if (this.win && !this.win.isDestroyed()) {
-      if (this.winDisplay === d.id) { this.win.setBounds(d.bounds); return; }
+      if (this.winKey === key) { this.win.setBounds(d.bounds); return; }
       this.close();
     }
-    this.winDisplay = d.id;
+    this.winKey = key;
     this.pageReady = false;
+    const overlay = !!src && src.id === d.id;
     const win = new BrowserWindow({
       ...d.bounds, frame: false, show: false, backgroundColor: '#000000', skipTaskbar: true, focusable: false,
       resizable: false, movable: false, minimizable: false, maximizable: false, enableLargerThanScreen: true, title: 'ShotReady video out',
@@ -201,16 +260,57 @@ export class Playout extends EventEmitter {
     win.setAlwaysOnTop(true, 'screen-saver');
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', (e) => e.preventDefault());
-    win.once('ready-to-show', () => { win.setBounds(d.bounds); win.showInactive(); });
+    if (src) {
+      // Kept out of every screen capture, its own included, so a screen it covers is captured as it is
+      // under it. Set again once shown: Windows can forget it when a window is first shown.
+      win.setContentProtection(true);
+      // Over the display it captures, the window lets the mouse through to the apps under it.
+      if (overlay) win.setIgnoreMouseEvents(true);
+      this.holdShortcut();
+    }
+    win.once('ready-to-show', () => { win.setBounds(d.bounds); win.showInactive(); if (src) win.setContentProtection(true); });
     win.on('closed', () => {
       if (this.win !== win) return;
       this.win = null;
-      this.winDisplay = null;
+      this.winKey = null;
       this.media.playing = false;
+      this.releaseShortcut();
       this.emitStatus();
     });
     this.win = win;
     win.loadFile(this.page);
+  }
+
+  holdShortcut() {
+    if (this.shortcut) return;
+    try {
+      this.shortcut = globalShortcut.register(SCREEN_OFF_KEY, () => {
+        this.emit('note', `Video out: the screen output was turned off with ${SCREEN_OFF_LABEL}`);
+        this.command('on', false);
+      }) ? SCREEN_OFF_KEY : false;
+    } catch { this.shortcut = false; }
+  }
+
+  releaseShortcut() {
+    if (this.shortcut) { try { globalShortcut.unregister(SCREEN_OFF_KEY); } catch { /* already gone */ } }
+    this.shortcut = null;
+  }
+
+  // The screen to send, found among the screens Windows offers for capture, by its display id.
+  async startScreen() {
+    const win = this.win, src = this.screenSource(), t = this.target();
+    if (!win || !src) return;
+    try {
+      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+      const pick = sources.find((x) => String(x.display_id) === String(src.id)) || (sources.length === 1 ? sources[0] : null);
+      if (!pick) throw new Error('Windows does not offer it for capture');
+      if (this.win !== win) return;
+      this.send({ type: 'screen', id: pick.id, width: src.width, height: src.height, fps: Math.max(25, Math.min(60, t?.hz || 60)), overlay: src.id === t?.id });
+    } catch (e) {
+      if (this.win !== win) return;
+      this.media.error = `${src.label} cannot be sent: ${e.message}`;
+      this.emitStatus();
+    }
   }
 
   close() {
@@ -218,8 +318,9 @@ export class Playout extends EventEmitter {
     this.win = null;
     this.pageReady = false;
     this.pendingPlay = false;
-    this.winDisplay = null;
+    this.winKey = null;
     this.media.playing = false;
+    this.releaseShortcut();
     if (win && !win.isDestroyed()) win.close();
   }
 
@@ -229,6 +330,11 @@ export class Playout extends EventEmitter {
     const s = this.settings();
     this.pageReady = true;
     this.sendLut();
+    if (this.source() === 'screen') {
+      this.send({ type: 'applyLut', on: true });
+      this.startScreen();
+      return;
+    }
     this.send({ type: 'applyLut', on: s.applyLut !== false });
     this.send({ type: 'volume', v: s.volume ?? 1 });
     this.send({ type: 'audio', ...(s.audio || { auto: true }) });
@@ -239,18 +345,26 @@ export class Playout extends EventEmitter {
   }
 
   sendLut() {
-    const l = this.lut();
+    const l = this.currentLut();
     this.send({ type: 'lut', lut: l && { size: l.size, data: l.data, min: l.min, max: l.max, input: l.input, output: l.output } });
   }
 
   report(state) {
     const was = JSON.stringify([this.media.playing, Math.round(this.media.position), this.media.error]);
+    // A screen being sent has no position: the clip's is kept for when it goes back to the player.
+    const clip = this.source() === 'clips';
     Object.assign(this.media, {
-      playing: !!state.playing, position: Number(state.position) || 0, duration: Number(state.duration) || this.media.duration,
-      error: state.error || null,
+      playing: !!state.playing, error: state.error || null,
+      ...(clip ? { position: Number(state.position) || 0, duration: Number(state.duration) || this.media.duration } : {}),
       ...('note' in state ? { outputNote: state.note || null } : {}),
     });
     if (state.audioError) this.emit('note', `Video out: audio output could not be set (${state.audioError})`);
+    // A screen covered by a window that is captured black would leave nothing to see: off it goes.
+    if (state.screenBlack && this.status().overlay) {
+      this.emit('note', 'Video out: the screen came out black, as Windows did not keep ShotReady\'s own window out of the capture (that needs Windows 10 version 2004 or later). The screen output was turned off; send the screen to another display instead.');
+      this.command('on', false);
+      return;
+    }
     this.preprocessor?.pace(this.media.playing);
     // The end of a clip: with "next plays automatically" on, the next one in the queue starts.
     if (state.ended && !this.media.ended) {
@@ -274,6 +388,21 @@ export class Playout extends EventEmitter {
         this.save({ display: arg ? { id: Number(arg.id), label: String(arg.label || '') } : null });
         this.reconcile();
         break;
+      case 'source':
+        this.save({ source: arg === 'screen' ? 'screen' : 'clips' });
+        this.media = { ...this.media, playing: false, error: null, outputNote: null };
+        this.reconcile();
+        break;
+      case 'screen':
+        this.save({ screen: arg ? { id: Number(arg.id), label: String(arg.label || '') } : null });
+        this.media.error = null;
+        this.reconcile();
+        break;
+      case 'screenLut':
+        this.save({ screenLut: String(arg || 'video') });
+        this.sendLut();
+        this.emitStatus();
+        break;
       case 'add': {
         const added = (Array.isArray(arg) ? arg : [arg]).filter((f) => typeof f === 'string' && existsSync(f)).map((file) => ({ id: this.newId(), file, name: basename(file), pre: { state: 'none' } }));
         this.queue.push(...added);
@@ -289,7 +418,7 @@ export class Playout extends EventEmitter {
         if (q.pre.output) rmSync(q.pre.output, { force: true });
         const i = this.queue.indexOf(q);
         this.queue.splice(i, 1);
-        if (this.cued === q.id) { this.send({ type: 'stop' }); this.cue(this.queue[i] || this.queue[i - 1] || null); }
+        if (this.cued === q.id) { this.clipSend({ type: 'stop' }); this.cue(this.queue[i] || this.queue[i - 1] || null); }
         this.persist();
         break;
       }
@@ -320,23 +449,27 @@ export class Playout extends EventEmitter {
         this.command('add', [arg]);
         this.cue(this.queue[this.queue.length - 1]);
         break;
-      case 'play':
+      case 'play': {
         // A missing LUT is said on the tab and when Play is pressed; it does not stop the video.
         if (!this.cuedItem() && this.queue[0]) this.cue(this.queue[0]);
         if (!this.cuedItem()) throw new Error('Add a video first');
+        // Play while the screen is being sent goes back to clips.
+        const fromScreen = this.source() === 'screen';
+        if (fromScreen) { this.save({ source: 'clips' }); this.media = { ...this.media, playing: false, error: null, outputNote: null }; }
         if (!this.target()) throw new Error('No output display is connected');
         if (this.media.error) throw new Error(this.media.error);
-        if (!this.on_) { this.on_ = true; this.reconcile(); }
+        if (fromScreen || !this.on_) { this.on_ = true; this.reconcile(); }
         // A window that is still opening plays as soon as its page is ready.
         if (this.pageReady && this.win) this.send({ type: 'play' }); else this.pendingPlay = true;
         break;
-      case 'pause': this.send({ type: 'pause' }); break;
-      case 'stop': this.send({ type: 'stop' }); this.media.position = 0; this.emitStatus(); break;
-      case 'seek': this.send({ type: 'seek', t: Number(arg) || 0 }); break;
-      case 'loop': this.save({ loop: !!arg }); this.send({ type: 'loop', on: !!arg }); this.emitStatus(); break;
-      case 'volume': this.save({ volume: Math.max(0, Math.min(1, Number(arg))) }); this.send({ type: 'volume', v: Number(arg) }); break;
-      case 'audio': this.save({ audio: arg ? { id: String(arg.id || ''), label: String(arg.label || '') } : null }); this.send({ type: 'audio', ...(arg || {}) }); this.emitStatus(); break;
-      case 'applyLut': this.save({ applyLut: !!arg }); this.send({ type: 'applyLut', on: !!arg }); this.emitStatus(); break;
+      }
+      case 'pause': this.clipSend({ type: 'pause' }); break;
+      case 'stop': this.clipSend({ type: 'stop' }); if (this.source() === 'clips') this.media.position = 0; this.emitStatus(); break;
+      case 'seek': this.clipSend({ type: 'seek', t: Number(arg) || 0 }); break;
+      case 'loop': this.save({ loop: !!arg }); this.clipSend({ type: 'loop', on: !!arg }); this.emitStatus(); break;
+      case 'volume': this.save({ volume: Math.max(0, Math.min(1, Number(arg))) }); this.clipSend({ type: 'volume', v: Number(arg) }); break;
+      case 'audio': this.save({ audio: arg ? { id: String(arg.id || ''), label: String(arg.label || '') } : null }); this.clipSend({ type: 'audio', ...(arg || {}) }); this.emitStatus(); break;
+      case 'applyLut': this.save({ applyLut: !!arg }); this.clipSend({ type: 'applyLut', on: !!arg }); this.emitStatus(); break;
       case 'lutChanged':
         // Copies made with the old LUT are out of date; one being made now is started again.
         for (const q of this.queue) if (this.preprocessor?.busy(q.id) && q.pre.lutVersion !== this.lutView()?.version) this.preprocessor.cancel(q.id);

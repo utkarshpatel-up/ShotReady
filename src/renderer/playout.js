@@ -3,6 +3,7 @@
 // as flat as the cameras. The picture is scaled to the display, keeping its shape, with black
 // around it: a 4K file on a 1080 output is scaled down, an HD file on a 4K output scaled up.
 // Black whenever nothing is playing. Audio goes to the output device chosen in ShotReady.
+// For the Screen source it shows a display, captured live, through the LUT picked for it instead.
 'use strict';
 
 const api = window.shotready;
@@ -16,6 +17,8 @@ let lut = null, applyLut = true, black = true, failed = null, startAt = 0;
 let direct = false;
 // A pre-processed clip already has the LUT in it, so it is not applied a second time.
 let baked = false;
+// The screen being sent, for the Screen source.
+let screenStream = null;
 
 const VERTEX = `#version 300 es
 uniform vec4 area; // x, y, width, height of the picture in clip space
@@ -120,6 +123,52 @@ function draw() {
   gl.drawArrays(gl.TRIANGLES, 0, 6);
 }
 
+// The screen to send: captured at its own size, as smooth as the output display runs.
+async function startScreen(m) {
+  failed = null;
+  baked = false;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { mandatory: {
+      chromeMediaSource: 'desktop', chromeMediaSourceId: m.id,
+      minWidth: m.width, maxWidth: m.width, minHeight: m.height, maxHeight: m.height, maxFrameRate: m.fps,
+    } } });
+    screenStream = stream;
+    stream.getVideoTracks()[0]?.addEventListener('ended', () => { if (screenStream === stream) { black = true; clearBlack(); fail('the screen capture stopped'); } });
+    video.loop = false;
+    video.muted = true;
+    video.srcObject = stream;
+    black = false;
+    await video.play();
+    report();
+    if (m.overlay) checkNotBlack();
+  } catch (e) {
+    fail(`the screen cannot be captured (${e.message || e.name})`);
+  }
+}
+
+// Over the display it captures, this window must be kept out of the capture; where Windows cannot
+// do that, the capture is black and so would be the screen. Said in the first seconds, while a
+// screen that is meant to be all black is unlikely.
+function checkNotBlack() {
+  const probe = document.createElement('canvas');
+  probe.width = 32; probe.height = 18;
+  const ctx = probe.getContext('2d', { willReadFrequently: true });
+  let looks = 0, dark = 0;
+  const timer = setInterval(() => {
+    if (!screenStream || !video.videoWidth) return;
+    ctx.drawImage(video, 0, 0, probe.width, probe.height);
+    const px = ctx.getImageData(0, 0, probe.width, probe.height).data;
+    let max = 0;
+    for (let i = 0; i < px.length; i += 4) max = Math.max(max, px[i], px[i + 1], px[i + 2]);
+    looks++;
+    if (max < 4) dark++;
+    if (looks >= 4) {
+      clearInterval(timer);
+      if (dark === looks) report({ screenBlack: true });
+    }
+  }, 500);
+}
+
 function onFrame() {
   draw();
   video.requestVideoFrameCallback(onFrame);
@@ -185,6 +234,7 @@ const commands = {
   audio: (m) => setAudio(m),
   lut: (m) => setLut(m),
   applyLut: (m) => { applyLut = !!m.on; draw(); },
+  screen: (m) => startScreen(m),
 };
 
 try {
@@ -206,6 +256,6 @@ video.addEventListener('error', () => fail(`this file cannot be played here (${v
 video.addEventListener('loadedmetadata', () => { if (startAt) video.currentTime = startAt; startAt = 0; report(); });
 addEventListener('resize', draw);
 addEventListener('contextmenu', (e) => e.preventDefault());
-setInterval(() => { if (!video.paused) report(); }, 250);
+setInterval(() => { if (!video.paused && !screenStream) report(); }, 250);
 api.on('playout', (m) => commands[m?.type]?.(m));
 api.call('playoutReady').catch(() => {});

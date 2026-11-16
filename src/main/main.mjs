@@ -148,6 +148,10 @@ async function startService() {
     profile: () => svc.profile,
     lut: () => svc.playoutLutData(),
     lutView: () => svc.playoutLutView(),
+    // The Screen source can go through the inverse LUT, a monitoring LUT, or a LUT of its own.
+    screenLuts: () => ({ video: svc.playoutLutView(), own: svc.screenLutView(), gammas: svc.lutsView().luts }),
+    screenLutData: (choice) => (choice === 'own' ? svc.screenLutData()
+      : choice.startsWith('gamma:') ? svc.lutData(choice.slice(6)) : svc.playoutLutData()),
     // A test machine has one display: the tests may use it as the output.
     allowPrimary: !!(dataOverride && process.env.SHOTREADY_TEST_PLAYOUT),
   });
@@ -248,14 +252,17 @@ const api = {
   luts: () => svc.lutsView(),
   lutLoad: async (gamma) => {
     // The environment variable is a test hook, honoured only when a throwaway data folder is given.
-    if (dataOverride && process.env.SHOTREADY_TEST_LUT) return svc.loadLut(gamma, process.env.SHOTREADY_TEST_LUT);
+    if (dataOverride && process.env.SHOTREADY_TEST_LUT) { const view = svc.loadLut(gamma, process.env.SHOTREADY_TEST_LUT); playout.command('lutChanged'); return view; }
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
       title: `LUT for ${gamma}`, properties: ['openFile'], filters: [{ name: '3D LUT', extensions: ['cube'] }],
     });
-    return canceled || !filePaths[0] ? null : svc.loadLut(gamma, filePaths[0]);
+    if (canceled || !filePaths[0]) return null;
+    const view = svc.loadLut(gamma, filePaths[0]);
+    playout.command('lutChanged'); // the screen sent on video out may go through this LUT
+    return view;
   },
-  lutClear: (gamma) => svc.clearLut(gamma),
-  lutRange: (gamma, input, output) => svc.setLutRange(gamma, input, output),
+  lutClear: (gamma) => { const view = svc.clearLut(gamma); playout.command('lutChanged'); return view; },
+  lutRange: (gamma, input, output) => { const view = svc.setLutRange(gamma, input, output); playout.command('lutChanged'); return view; },
   lutData: (gamma) => svc.lutData(gamma),
   setLutOn: (id, on) => svc.setLutOn(id, on),
   playoutStatus: () => playout.status(),
@@ -303,6 +310,19 @@ const api = {
   },
   playoutLutClear: () => { svc.clearPlayoutLut(); return playout.command('lutChanged'); },
   playoutLutRange: (input, output) => { svc.setPlayoutLutRange(input, output); return playout.command('lutChanged'); },
+  screenLutLoad: async () => {
+    let path = dataOverride && process.env.SHOTREADY_TEST_SCREEN_LUT;
+    if (!path) {
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, { title: 'LUT for the screen sent on video out', properties: ['openFile'], filters: [{ name: '3D LUT', extensions: ['cube'] }] });
+      if (canceled || !filePaths[0]) return null;
+      path = filePaths[0];
+    }
+    svc.loadScreenLut(path);
+    playout.command('screenLut', 'own');
+    return playout.command('lutChanged');
+  },
+  screenLutClear: () => { svc.clearScreenLut(); return playout.command('lutChanged'); },
+  screenLutRange: (input, output) => { svc.setScreenLutRange(input, output); return playout.command('lutChanged'); },
   // From the output window.
   playoutReady: () => { playout.restore(); return true; },
   playoutReport: (state) => { playout.report(state || {}); return true; },

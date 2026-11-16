@@ -1602,50 +1602,63 @@ export class ShotReadyService extends EventEmitter {
     return { gamma, name: l.name, version: l.version, input: l.input, output: l.output, size: cube.size, min: cube.min, max: cube.max, data: cube.data };
   }
 
-  // The inverse LUT for video out (video colour to Log), kept apart from the monitoring LUTs.
-  playoutLutView() {
-    const l = this.cfg.playoutLut;
+  // LUTs kept in a file of their own, apart from the monitoring LUTs: the inverse LUT for video out
+  // (video colour to Log), and the screen's own LUT for video out's Screen source.
+  fileLutView(key) {
+    const l = this.cfg[key];
     return l ? { name: l.name, size: l.size, input: l.input, output: l.output, version: l.version } : null;
   }
 
-  loadPlayoutLut(path) {
+  loadFileLut(key, file, what, path) {
     if (statSync(path).size > 64e6) throw new Error('That file is too big to be a LUT');
     const text = readFileSync(path, 'utf8');
     const cube = parseCube(text);
     const name = basename(path);
     mkdirSync(join(this.dataDir, 'luts'), { recursive: true });
-    writeFileSync(join(this.dataDir, 'luts', 'video-out.cube'), text);
-    this.cfg.playoutLut = { name, size: cube.size, ...rangesFromName(name), version: Date.now() };
+    writeFileSync(join(this.dataDir, 'luts', file), text);
+    this.cfg[key] = { name, size: cube.size, ...rangesFromName(name), version: Date.now() };
     this.saveConfig();
-    this.log('info', `Video out LUT: ${name} (${cube.size}-point)`);
-    return this.playoutLutView();
+    this.log('info', `${what}: ${name} (${cube.size}-point)`);
+    return this.fileLutView(key);
   }
 
-  clearPlayoutLut() {
-    if (this.cfg.playoutLut) {
-      delete this.cfg.playoutLut;
+  clearFileLut(key, file, what) {
+    if (this.cfg[key]) {
+      delete this.cfg[key];
       this.saveConfig();
-      rmSync(join(this.dataDir, 'luts', 'video-out.cube'), { force: true });
-      this.log('info', 'Video out LUT removed');
+      rmSync(join(this.dataDir, 'luts', file), { force: true });
+      this.log('info', `${what} removed`);
     }
     return null;
   }
 
-  setPlayoutLutRange(input, output) {
-    const l = this.cfg.playoutLut;
-    if (!l) throw new Error('No video out LUT is loaded');
+  setFileLutRange(key, what, input, output) {
+    const l = this.cfg[key];
+    if (!l) throw new Error(`No ${what} is loaded`);
     if (![input, output].every((v) => v === 'full' || v === 'legal')) throw new Error('Range must be full or legal');
-    this.cfg.playoutLut = { ...l, input, output, version: Date.now() };
+    this.cfg[key] = { ...l, input, output, version: Date.now() };
     this.saveConfig();
-    return this.playoutLutView();
+    return this.fileLutView(key);
   }
 
-  playoutLutData() {
-    const l = this.cfg.playoutLut;
+  fileLutData(key, file) {
+    const l = this.cfg[key];
     if (!l) return null;
-    const cube = parseCube(readFileSync(join(this.dataDir, 'luts', 'video-out.cube'), 'utf8'));
-    return { name: l.name, input: l.input, output: l.output, size: cube.size, min: cube.min, max: cube.max, data: cube.data };
+    const cube = parseCube(readFileSync(join(this.dataDir, 'luts', file), 'utf8'));
+    return { name: l.name, version: l.version, input: l.input, output: l.output, size: cube.size, min: cube.min, max: cube.max, data: cube.data };
   }
+
+  playoutLutView() { return this.fileLutView('playoutLut'); }
+  loadPlayoutLut(path) { return this.loadFileLut('playoutLut', 'video-out.cube', 'Video out LUT', path); }
+  clearPlayoutLut() { return this.clearFileLut('playoutLut', 'video-out.cube', 'Video out LUT'); }
+  setPlayoutLutRange(input, output) { return this.setFileLutRange('playoutLut', 'video out LUT', input, output); }
+  playoutLutData() { return this.fileLutData('playoutLut', 'video-out.cube'); }
+
+  screenLutView() { return this.fileLutView('screenLut'); }
+  loadScreenLut(path) { return this.loadFileLut('screenLut', 'screen-out.cube', 'Video out screen LUT', path); }
+  clearScreenLut() { return this.clearFileLut('screenLut', 'screen-out.cube', 'Video out screen LUT'); }
+  setScreenLutRange(input, output) { return this.setFileLutRange('screenLut', 'screen LUT', input, output); }
+  screenLutData() { return this.fileLutData('screenLut', 'screen-out.cube'); }
 
   setLutOn(bodyId, on) {
     if (!this.findBody(bodyId)) throw new Error(`Unknown body "${bodyId}"`);

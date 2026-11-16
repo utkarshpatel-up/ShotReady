@@ -37,7 +37,7 @@ The installed app shows demo mode when started with `ShotReady.exe --demo`.
 | Screen | What it is for |
 | --- | --- |
 | Dashboard | ATEM status (CONNECTED in green), camera checks summary, a card per body with its label, PGM/PVW |
-| Video out | Plays a video to the HDMI display through your inverse LUT, audio to the audio jack |
+| Video out | Plays a video to the HDMI display through your inverse LUT, audio to the audio jack, or sends a screen live through any LUT |
 | Stream | Streams the program live to YouTube, a Zoom webinar or event, or any RTMP server |
 | Bar | Always-on-top strip with WB, ISO, shutter, aperture, digital IS and waveform per camera. Drag to move, drag an edge to resize, toggle with the **Bar** button |
 | Bodies | Online status, IP, MAC, firmware and lens of every body |
@@ -395,6 +395,27 @@ Nothing on this tab holds the output back. A different format, a missing LUT, or
 graphics cannot apply a LUT (the video is then shown as it is) are all warnings only.
 
 MP4 (H.264 or HEVC) and WebM play; ProRes, DNxHR and MXF do not, so convert those to MP4 first.
+
+### Sending a screen through a LUT
+
+**Send: A screen, live, through a LUT** (top of the Video out tab) sends a display instead of a clip:
+whatever is on it (slides, a browser, a document you share) goes out live, every frame through a LUT
+on the graphics card, cursor included.
+
+- **Screen to send:** the main display unless you pick another.
+- **LUT:** the inverse LUT used for clips (the default), any monitoring LUT loaded in Settings, a LUT of
+  its own (**Load .cube…**, with its own LUT input and output), or none. The inverse and monitoring LUTs
+  keep the input and output ranges set where they were loaded.
+- **Output display:** as for clips, but the main display can be picked too. With none picked it is the
+  first other display, or the main display when it is the only one.
+
+With the screen sent apart from the output display, the output shows a copy of it. With the two the
+same, including a computer with one display (or two displays set to Duplicate in Windows, which
+Windows treats as one), ShotReady covers that display with its own picture through the LUT, so what you
+see is what goes out. Clicks and typing go through to the apps under it. ShotReady's window is kept out
+of the capture so it never films itself; that needs Windows 10 version 2004 or later. If the capture
+comes out black in its first seconds, the screen output turns itself off and the Log says why.
+**Ctrl+Shift+F12** turns the screen output off from any app. **Play** on a clip goes back to clips.
 
 ### Pre-processing
 
