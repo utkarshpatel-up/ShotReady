@@ -37,11 +37,13 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      # --publish never: electron-builder would otherwise try to upload by itself on a tag;
+      # the "Publish release" step below does that.
       - name: Build installer
-        run: npm run dist:win
+        run: npm run dist:win -- --publish never
 
       - name: Build portable zip
-        run: npm run dist:zip
+        run: npm run dist:zip -- --publish never
 
       - name: Checksums
         shell: bash
