@@ -187,7 +187,6 @@ body.dragging-card, body.dragging-card .card .card-head { cursor: grabbing; }
 .rec-btn { color: var(--red); font-weight: 600; white-space: nowrap; }
 .rec-btn:disabled { color: var(--dim); opacity: .55; cursor: not-allowed; }
 button.rec-btn.live, button.rec-btn.live:hover:not(:disabled) { background: var(--red); border-color: var(--red); color: #fff; }
-button.rec-btn.armed, button.rec-btn.armed:hover:not(:disabled) { background: #fff; border-color: var(--red); color: #c81e1e; }
 
 /* focus and power */
 .adjust .focus-drive { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dim); }
@@ -224,3 +223,85 @@ button.rec-btn.armed, button.rec-btn.armed:hover:not(:disabled) { background: #f
   box-shadow: 0 4px 18px rgba(0, 0, 0, .45); color: #ff4d4d; font-size: 15px; font-weight: 700; letter-spacing: .18em; }
 .fosd::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #ff4d4d; box-shadow: 0 0 6px #ff4d4d; }
 .fosd[hidden] { display: none; }
+
+/* the camera's AF frame is on Auto: the camera picks the focus point, so the box cannot be placed */
+.fframe { position: absolute; right: 6px; bottom: 6px; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 3px; background: #000b; color: var(--yellow); pointer-events: none; }
+.fframe[hidden] { display: none; }
+
+/* top of the Dashboard and Checks: the ATEM status on the left, the camera checks beside it */
+.status-bar { display: flex; align-items: stretch; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.atem-status { display: flex; flex-direction: column; justify-content: center; padding: 7px 16px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); min-width: 230px; max-width: 520px; }
+.atem-status .big { font-size: 24px; font-weight: 700; letter-spacing: .3px; line-height: 1.15; }
+.atem-status .sub { font-size: 12.5px; color: var(--text); opacity: .85; }
+.atem-status.ok { background: var(--green-bg); border-color: var(--green); }
+.atem-status.ok .big { color: var(--green); }
+.atem-status.wait { background: var(--yellow-bg); border-color: var(--yellow); }
+.atem-status.wait .big { color: var(--yellow); }
+.atem-status.bad { background: var(--red-bg); border-color: var(--red); }
+.atem-status.bad .big { color: var(--red); }
+.atem-status.off .big { color: var(--dim); }
+.checks-sum { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 1px; text-align: left; padding: 6px 14px; border-radius: 7px; max-width: 560px; min-width: 0; }
+.checks-sum .ck-title { font-size: 11.5px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+.checks-sum .ck-count { font-size: 15px; font-weight: 700; white-space: pre; }
+.checks-sum .ck-what { font-size: 12px; color: var(--text); opacity: .85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.checks-sum.not-ready .ck-count { color: var(--red); }
+.checks-sum.warnings .ck-count { color: var(--yellow); }
+.checks-sum.ready .ck-count { color: var(--green); }
+.status-bar .spacer { flex: 1; }
+.status-bar .meta { align-self: center; color: var(--dim); font-size: 12.5px; }
+.atem-found table { width: auto; }
+
+/* monitoring LUT: the picture drawn through the LUT on the graphics card */
+.feed canvas.flut { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+.feed.lut .ffps { color: var(--blue); }
+.card-actions .lut-btn.on { background: #e9ebef; color: #14161a; font-weight: 600; }
+table.luts select { width: auto; }
+
+/* people the camera has detected: blue for the one it follows, bright white for the one a click picks */
+.fperson { position: absolute; box-sizing: border-box; border: 1.5px solid rgba(255, 255, 255, .5); border-radius: 3px; pointer-events: none; }
+.fperson.track { border-color: rgba(108, 178, 255, .95); }
+.fperson.hover { border: 2px solid #fff; box-shadow: 0 0 0 2px rgba(0, 0, 0, .45), 0 0 10px rgba(255, 255, 255, .6); }
+.toast .toast-act { margin-left: 12px; }
+
+/* ISO above the camera's Base ISO */
+.facts .iso-over { color: var(--red); font-weight: 700; }
+.laptop-row { display: flex; align-items: center; gap: 10px; margin: 10px 0; flex-wrap: wrap; }
+.laptop-row input { width: 90px; }
+.laptop-row .hint { margin: 0; }
+
+/* copy settings from another camera */
+.adjust .copy-row { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dim); }
+.adjust .copy-row select { width: auto; flex: 1; min-width: 0; }
+.copy-list tr.no td { color: var(--dim); }
+.note.warn { color: var(--yellow); border: 1px solid var(--yellow); }
+
+/* video out */
+.vo-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
+.vo-row select { max-width: 520px; }
+.vo-seek { width: 100%; }
+.vo-live { font-weight: 700; color: var(--dim); }
+.vo-live.on { color: var(--red); }
+button.on-btn { background: var(--red); border-color: var(--red); color: #fff; font-weight: 600; }
+.warn-text { color: var(--yellow); }
+
+/* live stream */
+.st-source { display: flex; gap: 18px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+.st-preview { width: 320px; aspect-ratio: 16 / 9; background: #000; border: 1px solid var(--line); border-radius: 4px; object-fit: contain; }
+.st-url { width: 420px; max-width: 100%; }
+.st-key { width: 300px; max-width: 100%; }
+button.st-go { font-size: 14px; padding: 8px 18px; font-weight: 600; }
+.st-show { margin-left: 8px; }
+.tabs button.live-tab { color: var(--red); font-weight: 700; }
+
+/* the top bar stays on one line */
+.top { gap: 14px; }
+.tabs button, .seg button, #check, #bar-toggle { white-space: nowrap; }
+.tabs button { padding: 6px 7px; }
+.top-right { gap: 8px; }
+/* Narrower windows: the tabs scroll sideways rather than pushing the buttons off the edge. */
+.tabs { min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.top-right { flex-shrink: 0; }
+.vo-queue td { vertical-align: middle; }
+.vo-queue tr.cued td { background: var(--panel-2); }
+.vo-queue .q-actions { white-space: nowrap; text-align: right; }
+.vo-queue .q-actions button { margin-left: 4px; }

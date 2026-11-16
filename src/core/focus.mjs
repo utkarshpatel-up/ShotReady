@@ -11,7 +11,8 @@ const clamp = (n) => Math.max(0, Math.min(1, n));
 // gives no focus guide at all, for example in auto focus.
 export function normalizeFocus(meta) {
   const g = Array.isArray(meta?.fguide) ? meta.fguide[0] : null;
-  if (!g || !g.status || !g.pos) return { guide: false, focused: null, level: null, angle: null, dir: null, box: null };
+  const found = people(meta);
+  if (!g || !g.status || !g.pos) return { guide: false, focused: null, level: null, angle: null, dir: null, box: null, people: found };
   const { x, y, w, h } = g.pos;
   const left = clamp((x - w / 2) / 10000), top = clamp((y - h / 2) / 10000);
   return {
@@ -21,7 +22,24 @@ export function normalizeFocus(meta) {
     angle: g.angle,
     dir: g.dir,
     box: { x: left, y: top, w: Math.min(w / 10000, 1 - left), h: Math.min(h / 10000, 1 - top) },
+    people: found,
   };
+}
+
+// The subjects the camera's detection has found (meta.cgi detect: type, pos and track, as Canon's
+// remotes read them), in the same units as the focus guide: 0..10000 across the picture, each box
+// given by its centre. track marks the one the camera is following. Positions are rounded to half
+// a percent, so a box that only jitters does not redraw the screen.
+export function people(meta) {
+  const list = Array.isArray(meta?.detect) ? meta.detect : [];
+  const half = (n) => Math.round(n * 200) / 200;
+  return list.filter((d) => d?.pos && Number.isFinite(d.pos.x) && Number.isFinite(d.pos.w) && d.pos.w > 0).slice(0, 16).map((d) => {
+    const { x, w } = d.pos;
+    const y = Number.isFinite(d.pos.y) ? d.pos.y : 5000;
+    const h = Number.isFinite(d.pos.h) && d.pos.h > 0 ? d.pos.h : w;
+    const left = clamp((x - w / 2) / 10000), top = clamp((y - h / 2) / 10000);
+    return { type: String(d.type ?? ''), track: !!d.track, box: { x: half(left), y: half(top), w: half(Math.min(w / 10000, 1 - left)), h: half(Math.min(h / 10000, 1 - top)) } };
+  });
 }
 
 const CONNECT_TIMEOUT_MS = 4000;
@@ -108,7 +126,7 @@ export class FocusStream {
       const res = await httpGet(`${this.url}?type=once`, this.getAuth(), 2000);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const latest = decodeMsgpack(Buffer.from(await res.arrayBuffer()));
-      if (JSON.stringify(latest.fguide) !== JSON.stringify(this.meta.fguide)) this.apply(latest);
+      if (JSON.stringify([latest.fguide, latest.detect]) !== JSON.stringify([this.meta.fguide, this.meta.detect])) this.apply(latest);
     } catch {
       abort.abort(); // The stream ends, the loop reconnects, and the picture shows no focus data meanwhile.
     }

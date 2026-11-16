@@ -1,17 +1,19 @@
 // ShotReady application service: config + state files, reading bodies, running
 // checks, label assignment, references, workload, event log. No Electron imports.
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync, statSync, rmSync } from 'node:fs';
+import { join, basename } from 'node:path';
 import {
   PROFILES, DEFAULT_STANDARDS, OLD_DEFAULT_GAMMA, parseInfo, summarize, checkCamera, extractCopySettings, diffAgainstRef,
-  bodyIdentity, matchCameras, verdictOf, mandatoryChecks, essentials, shortLens, defaultsPlan, wbPlan, validateOnBody, cameraControls, recordState, focusDrive, focusFrame, checkFixes, fmtVideo,
+  bodyIdentity, matchCameras, verdictOf, mandatoryChecks, essentials, shortLens, defaultsPlan, wbPlan, validateOnBody, cameraControls, recordState, focusDrive, focusFrame, oneShotAf, continuousAf, checkFixes, fmtVideo, copyPlan,
 } from './engine.mjs';
 import { httpGet } from './http.mjs';
 import { CameraStream } from './stream.mjs';
 import { lumaStats } from './waveform.mjs';
 import { FocusStream, normalizeFocus } from './focus.mjs';
 import { CameraThread } from './camera-thread.mjs';
+import { describeNetworks } from './atem-discovery.mjs';
+import { parseCube, rangesFromName } from './cube.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const HOST_RE = /^[A-Za-z0-9.-]+(:\d{1,5})?$/;
@@ -20,6 +22,8 @@ const SWITCHERS = {
   constellation: { name: 'Constellation', sdi: '3840x2160:25000:P' },
   '2me': { name: '2 M/E 2RU' },
 };
+// What the screen needs to know about a focus action: whether it can be done, and why not.
+const okWhy = (x) => (x ? { ok: x.ok, why: x.why || null, ...('continuous' in x ? { continuous: x.continuous } : {}) } : null);
 const DEFAULT_LABELS = Array.from({ length: 8 }, (_, i) => `CAM ${i + 1}`);
 
 function writeJsonAtomic(path, data) {
@@ -60,6 +64,7 @@ export class ShotReadyService extends EventEmitter {
    * @param opts.atem           AtemLink or FakeAtemLink
    * @param opts.encrypt/decrypt  password protection (Electron safeStorage in the app)
    * @param opts.dupDelayMs     pause between duplicate-IP re-reads
+   * @param opts.waveform       measure the waveform (on by default when decodeJpeg is given)
    */
   constructor(dataDir, opts = {}) {
     super();
@@ -76,6 +81,7 @@ export class ShotReadyService extends EventEmitter {
     this.lastResult = null;
     this.reads = {};
     this.lensAlerted = {};
+    this.powerSeen = {};
     this.running = null;
     this.streams = {};
     this.streamRefused = {};
@@ -199,6 +205,23 @@ export class ShotReadyService extends EventEmitter {
   findLocation(label) { return this.cfg.locations.find((l) => l.label === label); }
   labelOfBody(id) { return Object.entries(this.state.assignments).find(([, a]) => a.body === id)?.[0]; }
 
+  // Logs a camera's power source when it changes: to the battery in red (the cable is out), back in
+  // green. On first sight only a source other than plain 'dc' or 'battery' is logged, so what a C50
+  // reports for USB-C power can be read in the Log.
+  notePower(id, power) {
+    if (!power) return;
+    const was = this.powerSeen[id];
+    this.powerSeen[id] = power;
+    const raw = `(the camera reports ${power.source})`;
+    if (!was) {
+      if (!/^(dc|battery)$/i.test(power.source)) this.log('info', `${id}: power ${power.text} ${raw}`);
+    } else if (was.battery !== power.battery) {
+      this.log(power.battery ? 'red' : 'green', `${id}: ${power.battery ? 'now on its battery' : 'back on outside power'}: ${power.text} ${raw}`);
+    } else if (was.source !== power.source) {
+      this.log('info', `${id}: power ${power.text} ${raw}`);
+    }
+  }
+
   // Learns MAC on first sight and the first lens. A later lens change stays flagged until
   // accepted, otherwise auto-refresh would clear the warning seconds after it appeared.
   rememberBody(rb, now = Date.now()) {
@@ -212,6 +235,7 @@ export class ShotReadyService extends EventEmitter {
       this.lensAlerted[rb.body.id] = rb.summary.lens;
       this.log('yellow', `${rb.body.id}: lens changed ${shortLens(k.lastLens)} → ${shortLens(rb.summary.lens)}`);
     }
+    this.notePower(rb.body.id, rb.summary.power);
     this.state.bodies[rb.body.id] = {
       ...k,
       runtimeMs: (k.runtimeMs || 0) + counted,
@@ -326,6 +350,7 @@ export class ShotReadyService extends EventEmitter {
         record: rb.error ? null : recordState(rb.info),
         focusDrive: rb.error ? null : focusDrive(rb.info),
         focusFrame: rb.error ? null : focusFrame(rb.info),
+        oneShot: rb.error ? null : okWhy(oneShotAf(rb.info)),
       });
     }
 
@@ -337,7 +362,7 @@ export class ShotReadyService extends EventEmitter {
       // Shown on the card so a spare can be readied, but not counted until it is on a label.
       const known = this.state.bodies[rb.body.id] || {};
       const checks = rb.error ? [] : [...checkCamera(rb.summary, {}, checkProfile, std), ...mandatoryChecks(rb.info, rb.summary, this.std, known.confirmed)];
-      spares.push({ body: rb.body.id, ip: rb.body.ip, online: !rb.error, summary: rb.summary || null, results, checks, spare: true, controls: rb.error ? null : cameraControls(rb.info), record: rb.error ? null : recordState(rb.info), focusDrive: rb.error ? null : focusDrive(rb.info), focusFrame: rb.error ? null : focusFrame(rb.info) });
+      spares.push({ body: rb.body.id, ip: rb.body.ip, online: !rb.error, summary: rb.summary || null, results, checks, spare: true, essentials: rb.error ? null : essentials(rb.info, rb.summary, this.std), controls: rb.error ? null : cameraControls(rb.info), record: rb.error ? null : recordState(rb.info), focusDrive: rb.error ? null : focusDrive(rb.info), focusFrame: rb.error ? null : focusFrame(rb.info), oneShot: rb.error ? null : okWhy(oneShotAf(rb.info)) });
     }
 
     for (const c of [...labels, ...spares]) {
@@ -369,7 +394,7 @@ export class ShotReadyService extends EventEmitter {
       verdict: verdictOf(reds, yellows), reds, yellows, global, labels, spares, matching,
     };
     if (this.lastResult?.verdict !== result.verdict) {
-      const words = { ready: 'READY TO MIX', warnings: 'READY WITH WARNINGS', 'not-ready': 'NOT READY' };
+      const words = { ready: 'Camera checks all passed', warnings: 'Camera checks: warnings only', 'not-ready': 'Camera checks: red findings' };
       this.log(result.verdict === 'ready' ? 'green' : result.verdict === 'warnings' ? 'yellow' : 'red', `${words[result.verdict]} on ${this.profile}: ${reds} red, ${yellows} yellow`);
     }
     if (report) result.reportPath = this.writeReport(result);
@@ -387,6 +412,8 @@ export class ShotReadyService extends EventEmitter {
     this.startCameras();
     this.startStreams();
     this.startTimer();
+    const n = Object.keys(this.cams).length;
+    this.log('info', `Threads: the main thread, ${n} camera thread${n === 1 ? '' : 's'} (pictures and waveform)${this.atem?.thread ? ', and one for the ATEM link' : ''}`);
   }
 
   // A full read waits for every camera, and an unreachable one holds it up for seconds. These
@@ -455,7 +482,9 @@ export class ShotReadyService extends EventEmitter {
       this.cams[body.id] = new CameraThread(body.id, { url: this.frameUrl(body), auth: this.authForRequests() }, {
         viewers: (n) => this.onViewers(body.id, n),
         state: (state) => { if (state === 'down') this.setWave(body.id, null); },
+        level: (wave) => this.setWave(body.id, wave),
         wave: (jpeg) => this.measureWave(body.id, jpeg),
+        note: (text) => this.log('info', `${body.id}: ${text}`),
         stats: (frames) => { if (this.viewers[body.id] > 0) this.emit('feedstat', { body: body.id, fps: frames }); },
         failed: (message) => this.log('red', `${body.id}: video thread stopped (${message})`),
       });
@@ -492,7 +521,8 @@ export class ShotReadyService extends EventEmitter {
     // 8 overlapping requests to share between the watched cameras, at most 4 each (more than 4
     // made the C80 return errors): 1 or 2 cameras get 4, 3 or 4 get 2, 5 or more get 1.
     const parallel = fixed >= 1 && fixed <= 4 ? fixed : Math.max(1, Math.min(4, Math.floor(8 / Math.max(1, watched.length))));
-    const measure = this.opts.decodeJpeg && this.cfg.waveformMs > 0;
+    // Each camera's thread measures its own frames; opts.decodeJpeg is the main-thread fallback.
+    const measure = (this.opts.waveform ?? !!this.opts.decodeJpeg) && this.cfg.waveformMs > 0;
     const idle = measure ? { parallel: 1, intervalMs: this.cfg.waveformMs, waveGap: this.cfg.waveformMs } : { parallel: 0, intervalMs: 0, waveGap: 0 };
     // Waveform from the same frames: quicker while someone is watching.
     const live = { parallel, intervalMs: 0, waveGap: measure ? 250 : 0 };
@@ -558,8 +588,9 @@ export class ShotReadyService extends EventEmitter {
     const status = res.headers.get('livescope-status');
     await res.arrayBuffer();
     if (res.status === 401) throw new Error('login rejected');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    if (status && status !== '0') throw new Error(status);
+    // The camera answered but would not take it: another way of asking may still work.
+    if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { refused: true });
+    if (status && status !== '0') throw Object.assign(new Error(status), { refused: true });
   }
 
   // ---------- tally from the ATEM to the camera lamps ----------
@@ -630,6 +661,7 @@ export class ShotReadyService extends EventEmitter {
 
   fastBusy = {};
   isoSent = {};
+  kelvinSent = {};
   isoChain = Promise.resolve();
   focusTimers = {};
   focusChain = {};
@@ -784,6 +816,51 @@ export class ShotReadyService extends EventEmitter {
     return { body: id, iso: next.text };
   }
 
+  // F1 and F2: Media Player 1 or 2 straight to program on M/E 1, as a cut. This is the only thing
+  // ShotReady ever changes on the switcher, and only from the Mixer seat.
+  async cutMediaPlayer(n) {
+    if (n !== 1 && n !== 2) throw new Error('Unknown media player');
+    if (this.state.keyMode === 'assistant') throw new Error(`F${n} cuts to program only in Mixer mode. Nothing was changed.`);
+    const a = this.atemSummary();
+    if (!a.connected) throw new Error('The ATEM is not connected. Nothing was changed.');
+    const input = n === 1 ? 3010 : 3020;
+    if (a.inputs && Object.keys(a.inputs).length && !(input in a.inputs)) throw new Error(`This switcher has no Media Player ${n}`);
+    await this.atem.changeProgram(input, 0);
+    const name = a.inputs?.[input] || `Media Player ${n}`;
+    this.log('info', `F${n}: ${name} cut to program on M/E 1`);
+    return { input, name };
+  }
+
+  // One Kelvin step (A down, D up), on the same camera W and S change ISO on. Run one at a time.
+  stepKelvin(dir, selected) {
+    const run = this.isoChain.catch(() => {}).then(() => this.#stepKelvin(dir, selected));
+    this.isoChain = run;
+    return run;
+  }
+
+  async #stepKelvin(dir, selected) {
+    const id = this.#isoTarget(selected);
+    const body = this.findBody(id);
+    const info = this.reads[id]?.info;
+    if (!body || !info) throw new Error(`${id} is not online`);
+    const control = cameraControls(info).find((c) => c.key === 'c.1.wb.kelvin');
+    if (!control) throw new Error(`${id}: white balance is not on Kelvin, so there is no Kelvin to step`);
+    // The camera's report can lag a quick tap, so step from the value just sent.
+    const sent = this.kelvinSent[id];
+    const from = sent && Date.now() - sent.at < 1500 ? sent.value : control.value;
+    const i = control.options.findIndex((o) => o.value === from);
+    if (i < 0) throw new Error(`${id}: ${from} K is not in the camera's list`);
+    const next = control.options[i + dir];
+    if (!next) throw new Error(`${id} is already at its ${dir > 0 ? 'highest' : 'lowest'} Kelvin`);
+    await this.control(body, { [control.key]: next.value });
+    this.kelvinSent[id] = { value: next.value, at: Date.now() };
+    this.log('info', `${id}: Kelvin set to ${next.text} from the keyboard`);
+    clearTimeout(this.isoRefresh);
+    this.isoRefresh = setTimeout(() => this.check({ force: true }).catch(() => {}), 400);
+    await sleep(50);
+    return { body: id, kelvin: next.text };
+  }
+
   // Push focus closer or further while held. If the stop never arrives the camera is stopped anyway.
   moveFocus(bodyId, dir) {
     if (!['near', 'far', 'one_shot', 'stop'].includes(dir)) throw new Error('Unknown focus direction');
@@ -791,43 +868,99 @@ export class ShotReadyService extends EventEmitter {
     const info = this.reads[bodyId]?.info;
     if (!body || !info) throw new Error(`${bodyId} is not online`);
     // A stop always goes through, even if the camera went live while focus was moving. 1-Shot AF is
-    // a deliberate press, so it works in Mixer and Assistant mode alike, live or not.
-    if (dir !== 'stop') {
-      if (dir !== 'one_shot') this.#guardLive(bodyId);
+    // a deliberate press, so it works in Mixer and Assistant mode alike, live or not. It has its own
+    // check, made against what the camera says at the moment of the press: see #oneShot.
+    if (dir === 'one_shot') {
+      if (!oneShotAf(info)) throw new Error(`${bodyId} cannot do 1-Shot AF from here`);
+    } else if (dir !== 'stop') {
+      this.#guardLive(bodyId);
       const drive = focusDrive(info);
       if (!drive?.ok) throw new Error(drive?.why || `${bodyId} cannot move focus`);
     }
-    clearTimeout(this.focusTimers[bodyId]);
+    if (dir !== 'one_shot') clearTimeout(this.focusTimers[bodyId]);
     if (dir === 'near' || dir === 'far') this.focusTimers[bodyId] = setTimeout(() => this.moveFocus(bodyId, 'stop').catch(() => {}), 4000);
-    const run = (this.focusChain[bodyId] || Promise.resolve()).catch(() => {}).then(() => this.control(body, { 'c.1.focus.action': dir }));
+    const send = dir === 'one_shot' ? () => this.#oneShot(body, this.reads[bodyId]?.info || info) : () => this.control(body, { 'c.1.focus.action': dir });
+    const run = (this.focusChain[bodyId] || Promise.resolve()).catch(() => {}).then(send);
     this.focusChain[bodyId] = run;
     return run.then(() => {
-      if (dir === 'one_shot') this.log('info', `${bodyId}: 1-shot focus`);
+      if (dir === 'one_shot') this.log('info', `${bodyId}: 1-Shot AF`);
       return true;
+    }, (e) => {
+      if (dir === 'one_shot') this.log('yellow', `${bodyId}: 1-Shot AF did not go through (${e.message})`);
+      throw e;
     });
   }
 
-  // Put the AF frame where the picture was clicked. x and y are fractions of the picture.
-  async setFocusFrame(bodyId, x, y) {
+  // 1-Shot AF. The lens switch and focus mode are asked fresh, so a reading a few seconds old (the
+  // switch just flipped to AF, or the camera mid-way through focusing) never blocks a press. If the
+  // camera cannot be asked, the last reading is used.
+  async #oneShot(body, info) {
+    const items = ['c.1.lens.focus', 'c.1.focus', 'c.1.focus.auto', 'c.1.focus.action.list'];
+    let now = info;
+    try {
+      const res = await httpGet(`http://${body.ip}${this.cfg.infoPath}?${new URLSearchParams(items.map((k) => ['item', k]))}`, this.authForRequests(), 1000);
+      if (res.ok) now = { ...info, ...parseInfo(await res.text()) }; else await res.arrayBuffer();
+    } catch { /* the last reading is used */ }
+    const shot = oneShotAf(now);
+    if (!shot?.ok) throw new Error(shot?.why || `${body.id} cannot do 1-Shot AF from here`);
+    try {
+      await this.control(body, shot.params);
+    } catch (e) {
+      throw new Error(e.refused ? `the camera refused 1-Shot AF (${e.message})` : e.message);
+    }
+  }
+
+  // A click on the picture. Where the AF frame can be placed, it goes there and the camera focuses
+  // on it. With the AF frame on Auto there is no position to set, so the click is a 1-Shot AF and the
+  // camera picks the subject itself. x and y are fractions of the picture.
+  // opts.person: the click picked a person the camera detected (x and y are that person). With the
+  // AF frame on Auto the camera would focus whoever it chose, not that person, so nothing is sent and
+  // the answer offers an AF frame type that can be placed. opts.frame: switch to that type first.
+  async setFocusFrame(bodyId, x, y, opts = {}) {
     const body = this.findBody(bodyId);
     const info = this.reads[bodyId]?.info;
     if (!body || !info) throw new Error(`${bodyId} is not online`);
     this.#guardLive(bodyId);
-    const frame = focusFrame(info);
-    if (!frame?.ok) throw new Error(frame?.why || `${bodyId} cannot move its AF frame`);
     if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Unknown position');
-    // With Continuous AF on, moving the frame pulls focus straight away.
-    const onAir = this.lastResult?.labels.find((l) => l.body === bodyId)?.tally?.program?.length;
-    if (onAir && info['c.1.focus'] === 'auto') throw new Error(`${bodyId} is on program with Continuous AF on, so the box was not moved`);
-    const place = (n) => String(Math.round(Math.max(0, Math.min(1, n)) * 9999));
-    await this.control(body, { 'c.1.focus.frame.1.x': place(x), 'c.1.focus.frame.1.y': place(y) });
-    // Focusing on air would show on the program feed, so that stays a deliberate press of 1-Shot AF.
-    if (onAir) return { onAir: true };
-    if (focusDrive(info)?.ok) {
-      await sleep(100);
-      await this.moveFocus(bodyId, 'one_shot');
+    let frame = focusFrame(info);
+    if (frame?.auto && opts.person) {
+      const offered = (info['c.1.focus.frame.1.list'] || '').split(',');
+      // Zone first: people detection keeps working in it. Then the other types that can be placed.
+      const placeable = ['zone', 'large_zone_horizontal', 'large_zone_vertical', 'spot'].find((t) => offered.includes(t));
+      if (!opts.frame) return { needFrame: true, offer: placeable || null };
+      if (!offered.includes(opts.frame) || opts.frame === 'auto') throw new Error(`${bodyId} does not offer that AF frame`);
+      await this.control(body, { 'c.1.focus.frame.1': opts.frame });
+      info['c.1.focus.frame.1'] = opts.frame; // the camera reports it shortly; the frame is placed now
+      this.log('info', `${bodyId}: AF frame set to ${opts.frame} so a click can choose the person`);
+      await sleep(150);
+      frame = focusFrame(info);
     }
-    return { onAir: false };
+    const shot = oneShotAf(info);
+    const onAir = !!this.lastResult?.labels.find((l) => l.body === bodyId)?.tally?.program?.length;
+    let placed = false;
+    if (frame?.ok) {
+      // With Continuous AF on, moving the frame pulls focus straight away.
+      if (onAir && continuousAf(info)) throw new Error(`${bodyId} is on program with Continuous AF on, so the box was not moved`);
+      const place = (n) => String(Math.round(Math.max(0, Math.min(1, n)) * 9999));
+      await this.control(body, { 'c.1.focus.frame.1.x': place(x), 'c.1.focus.frame.1.y': place(y) });
+      placed = true;
+    }
+    // Focusing on air would show on the program feed, so that stays a deliberate press of 1-Shot AF.
+    if (onAir) return { onAir: true, placed };
+    // With Continuous AF on, the camera follows a placed box by itself, and a click is not meant to
+    // take it out of continuous focusing.
+    if (shot?.ok && shot.continuous) {
+      if (placed) return { onAir: false, placed, focused: false };
+      throw new Error(`${bodyId} has Continuous AF on and the AF frame on Auto, so the camera is already choosing focus by itself. Press 1-Shot AF to focus once anyway`);
+    }
+    if (shot?.ok) {
+      if (placed) await sleep(100);
+      await this.moveFocus(bodyId, 'one_shot');
+      return { onAir: false, placed, focused: true, autoFrame: !!frame?.auto };
+    }
+    // Continuous AF follows a placed box by itself.
+    if (placed) return { onAir: false, placed, focused: false };
+    throw new Error(shot?.why || frame?.why || `${bodyId} cannot be focused from the picture`);
   }
 
   // The repair offered on a failed check. Worked out again here from what the camera reports now.
@@ -861,6 +994,60 @@ export class ShotReadyService extends EventEmitter {
     this.log('info', `${bodyId}: record ${on ? 'start' : 'stop'} sent`);
     this.check({ force: true }).catch(() => {});
     return true;
+  }
+
+  // Every setting a camera reports, read fresh and saved as a text file in the reports folder. Used
+  // to find the names of settings (a model's saturation or resolution keys) to add to ShotReady.
+  async saveSettingsList(bodyId) {
+    const body = this.findBody(bodyId);
+    if (!body) throw new Error(`Unknown body "${bodyId}"`);
+    const info = await this.fetchInfo(body, this.authForRequests());
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const path = join(this.reportsDir, `${bodyId}-settings-${stamp}.txt`);
+    const head = [`# ShotReady settings list: ${bodyId} at ${body.ip}`, `# ${info['s.hardware'] || '?'} firmware ${info['s.firmware'] || '?'}, read ${new Date().toLocaleString()}`, ''];
+    writeFileSync(path, [...head, ...Object.keys(info).sort().map((k) => `${k}=${info[k]}`), ''].join('\r\n'));
+    this.log('info', `${bodyId}: settings list saved (${Object.keys(info).length} settings)`);
+    return path;
+  }
+
+  // ---------- copy settings from another camera ----------
+  // What would change on toId to match fromId's picture settings. Read fresh from both cameras.
+  async copyPreview(fromId, toId) {
+    if (fromId === toId) throw new Error('Pick another camera to copy from');
+    const [from, to] = await Promise.all([fromId, toId].map(async (id) => {
+      const body = this.findBody(id);
+      if (!body || !this.reads[id]?.info) throw new Error(`${id} is not online`);
+      return this.fetchInfo(body, this.authForRequests());
+    }));
+    return { from: fromId, to: toId, live: this.isLive(toId), rows: copyPlan(from, to) };
+  }
+
+  // Sends the chosen settings in order. A value that only appears once a mode has changed (Kelvin
+  // after White balance goes to Kelvin) is caught by a second pass on a fresh read of the camera.
+  async copyApply(fromId, toId, keys) {
+    this.#guardLive(toId);
+    const body = this.findBody(toId), source = this.findBody(fromId);
+    if (!body || !source) throw new Error('Unknown camera');
+    const auth = this.authForRequests();
+    const from = await this.fetchInfo(source, auth);
+    const applied = [], failed = new Map();
+    for (let pass = 0; pass < 2; pass++) {
+      const to = await this.fetchInfo(body, auth);
+      const plan = copyPlan(from, to).filter((r) => keys.includes(r.key) && !applied.includes(r.name));
+      for (const r of plan) {
+        if (!r.ok) { failed.set(r.key, { name: r.name, reason: r.why }); continue; }
+        try {
+          await this.control(body, { [r.key]: r.from });
+          applied.push(r.name);
+          failed.delete(r.key);
+        } catch (e) { failed.set(r.key, { name: r.name, reason: e.message }); }
+        await sleep(50);
+      }
+      if (!failed.size) break;
+    }
+    this.log('info', `${toId}: ${applied.length} setting(s) copied from ${fromId}${failed.size ? `; not taken: ${[...failed.values()].map((f) => f.name).join(', ')}` : ''}`);
+    await this.check({ force: true });
+    return { applied, failed: [...failed.values()] };
   }
 
   // One setting on one camera. Only a setting and value the camera itself offers can be sent.
@@ -1018,10 +1205,14 @@ export class ShotReadyService extends EventEmitter {
     if (!this.atem) return { configured: false, connected: false };
     return { ...this.atem.status, ...(this.atem.data || {}) };
   }
+  // A label's ATEM input: the one set in Settings, or else its place in the list (Cam-01 is input 1).
+  // The laptop's video input is never a camera's, so it never lights a camera's tally lamp or badge.
   atemInputOf(loc) {
     if (!loc) return 0;
-    return Number(loc.atemInput) || this.cfg.locations.findIndex((l) => l.label === loc.label) + 1;
+    const input = Number(loc.atemInput) || this.cfg.locations.findIndex((l) => l.label === loc.label) + 1;
+    return input && input === this.laptopInput() ? 0 : input;
   }
+  laptopInput() { return Number(this.cfg.laptopVideo?.atemInput) || 0; }
 
   // Which M/Es have this label's input on program and on preview. A source that only shows through
   // a key still counts as on program, the same as for the camera lamp.
@@ -1034,17 +1225,49 @@ export class ShotReadyService extends EventEmitter {
     };
     return { program: on('program'), preview: on('preview'), input };
   }
+  // Finds and connects the ATEM. The address in Settings is tried first; blank (or not answering)
+  // means every network the computer is on is searched, Ethernet and Wi-Fi alike. The cameras'
+  // networks are searched too, as the switcher is usually on the same one.
+  startAtem() {
+    if (!this.atem?.start) return null;
+    const a = this.cfg.atem || {};
+    return this.atem.start({
+      ip: a.ip || '',
+      search: a.search !== false,
+      hints: () => ({ subnetsOf: this.cfg.bodies.map((b) => b.ip) }),
+      lastIp: this.state.atemLastIp || '',
+      onFound: (ip) => { if (this.state.atemLastIp !== ip) { this.state.atemLastIp = ip; this.saveStateSoon(); } },
+    }).catch((e) => this.log('red', `ATEM: ${e.message}`));
+  }
+
+  // Settings > Search now: what answers on each network right now, and a nudge to the link so it
+  // does not wait for its next search.
+  async searchAtem() {
+    if (!this.atem?.find) throw new Error('ATEM search is not available');
+    const r = await this.atem.find({ hints: { subnetsOf: this.cfg.bodies.map((b) => b.ip), hosts: [this.cfg.atem?.ip, this.state.atemLastIp].filter(Boolean) } });
+    this.log('info', `ATEM search: ${r.found.length ? r.found.map((f) => `${f.name || 'ATEM'} at ${f.ip} (${f.via})`).join(', ') : 'none found'}`);
+    if (!this.atemSummary().connected) this.atem.searchNow?.();
+    return { networks: r.networks, searched: describeNetworks(r.networks, this.cfg.bodies.map((b) => b.ip)), found: r.found, connectedIp: this.atemSummary().connected ? this.atemSummary().ip : null };
+  }
+
   atemStateKey() {
     const a = this.atemSummary();
-    return `${a.connected}|${a.modeName}`;
+    return `${a.connected}|${a.modeName}|${a.ip}|${!!a.notFound}`;
   }
   onAtemChange() {
     this.syncTally();
     const a = this.atemSummary();
     const key = this.atemStateKey();
     if (key !== this.atemKey) {
+      const was = this.atemKey;
       this.atemKey = key;
-      if (a.configured) this.log(a.connected ? 'green' : 'yellow', a.connected ? `ATEM connected: ${a.modeLabel || 'reading'}` : 'ATEM not connected');
+      if (a.thread && a.thread !== this.atemThreadSaid) {
+        this.atemThreadSaid = a.thread;
+        if (a.thread === 'main') this.log('yellow', `ATEM link running on the main thread: its own thread could not start (${a.threadError})`);
+      }
+      if (a.connected) this.log('green', `ATEM connected: ${a.name || 'switcher'} at ${a.ip}${a.via && a.via !== 'Settings' ? ` (found by ${a.via}${a.network ? ` on ${a.network}` : ''})` : ''}, ${a.modeLabel || 'reading'}`);
+      else if (a.notFound && !a.configured) this.log('yellow', `No ATEM found. Searched ${a.searchedText || 'every network'}. Searching again automatically.`);
+      else if (a.configured && was?.startsWith('true')) this.log('yellow', 'ATEM not connected, searching for it');
       if (this.lastResult) this.check({ force: true }).catch(() => {});
     } else if (this.lastResult) {
       // Cut on the switcher: update program/preview without re-reading cameras.
@@ -1264,6 +1487,10 @@ export class ShotReadyService extends EventEmitter {
     const inputs = s.locations.map((l) => Number(l.atemInput || 0));
     if (inputs.some((n) => !Number.isInteger(n) || n < 0)) throw new Error('ATEM input must be a whole number');
     if (new Set(inputs.filter(Boolean)).size !== inputs.filter(Boolean).length) throw new Error('Two labels point at the same ATEM input');
+    const laptop = Number(s.laptopVideo?.atemInput || 0);
+    if (!Number.isInteger(laptop) || laptop < 0) throw new Error('The laptop video\'s ATEM input must be a whole number');
+    const clash = laptop && labels.find((_, i) => inputs[i] === laptop);
+    if (clash) throw new Error(`${clash} and the laptop video point at the same ATEM input (${laptop})`);
     const ips = s.bodies.map((b) => String(b.ip || '').trim());
     if (ips.some((ip) => !HOST_RE.test(ip))) throw new Error('A body has an invalid IP address');
     if (new Set(ips).size !== ips.length) throw new Error('Two bodies have the same IP address');
@@ -1286,8 +1513,10 @@ export class ShotReadyService extends EventEmitter {
       const n = s.bodies.find((x) => x.id === b.id);
       return n ? { ...b, ip: String(n.ip).trim() } : b;
     });
-    const ipChanged = this.cfg.atem?.ip !== atemIp;
-    this.cfg.atem = { ip: atemIp };
+    const atemSearch = s.atem?.search !== false;
+    const atemChanged = this.cfg.atem?.ip !== atemIp || (this.cfg.atem?.search !== false) !== atemSearch;
+    this.cfg.atem = { ip: atemIp, search: atemSearch };
+    if (laptop) this.cfg.laptopVideo = { atemInput: laptop }; else delete this.cfg.laptopVideo;
     this.cfg.pollSeconds = poll;
     this.cfg.standards = {
       ...this.cfg.standards, ...s.standards, shutterSpeed: shutter, minRecordMinutes: minutes,
@@ -1310,9 +1539,120 @@ export class ShotReadyService extends EventEmitter {
     this.saveConfig();
     this.saveState();
     this.log('info', 'Settings saved');
-    if (ipChanged && this.atem) this.atem.connect(atemIp).catch((e) => this.log('red', `ATEM: ${e.message}`));
+    if (atemChanged) this.startAtem();
     this.setAutoRefresh(!!s.autoRefresh);
     return this.check({ force: true });
+  }
+
+  // ---------- monitoring LUTs ----------
+  // One 3D LUT per Log gamma, shown over the pictures in ShotReady only: nothing is sent to a camera,
+  // and the waveform still reads the Log picture. Each camera shows the LUT for the gamma it is set
+  // to, when its LUT button is on. The files are kept in the data folder.
+  lutPath(gamma) { return join(this.dataDir, 'luts', `${gamma}.cube`); }
+
+  lutsView() {
+    const set = this.cfg.luts || {};
+    return {
+      gammas: [...new Set([...this.std.allowedGamma, ...Object.keys(set)])],
+      luts: Object.fromEntries(Object.entries(set).map(([g, l]) => [g, { name: l.name, size: l.size, input: l.input, output: l.output, version: l.version }])),
+      on: { ...this.state.lutOn },
+    };
+  }
+
+  loadLut(gamma, path) {
+    if (!/^[a-z0-9_]+$/i.test(gamma)) throw new Error('Unknown gamma');
+    if (statSync(path).size > 64e6) throw new Error('That file is too big to be a LUT');
+    const text = readFileSync(path, 'utf8');
+    const cube = parseCube(text);
+    const name = basename(path);
+    mkdirSync(join(this.dataDir, 'luts'), { recursive: true });
+    writeFileSync(this.lutPath(gamma), text);
+    this.cfg.luts = { ...this.cfg.luts, [gamma]: { name, size: cube.size, ...rangesFromName(name), version: Date.now() } };
+    this.saveConfig();
+    this.log('info', `LUT for ${gamma}: ${name} (${cube.size}-point)`);
+    return this.lutsView();
+  }
+
+  clearLut(gamma) {
+    if (this.cfg.luts?.[gamma]) {
+      const { [gamma]: gone, ...rest } = this.cfg.luts;
+      this.cfg.luts = rest;
+      this.saveConfig();
+      rmSync(this.lutPath(gamma), { force: true });
+      this.log('info', `LUT for ${gamma} removed (${gone.name})`);
+    }
+    return this.lutsView();
+  }
+
+  // Whether the LUT expects the picture as full range or video (legal) levels, and gives either.
+  setLutRange(gamma, input, output) {
+    const l = this.cfg.luts?.[gamma];
+    if (!l) throw new Error(`No LUT is loaded for ${gamma}`);
+    const ok = (v) => v === 'full' || v === 'legal';
+    if (!ok(input) || !ok(output)) throw new Error('Range must be full or legal');
+    this.cfg.luts = { ...this.cfg.luts, [gamma]: { ...l, input, output, version: Date.now() } };
+    this.saveConfig();
+    return this.lutsView();
+  }
+
+  lutData(gamma) {
+    const l = this.cfg.luts?.[gamma];
+    if (!l) return null;
+    const cube = parseCube(readFileSync(this.lutPath(gamma), 'utf8'));
+    return { gamma, name: l.name, version: l.version, input: l.input, output: l.output, size: cube.size, min: cube.min, max: cube.max, data: cube.data };
+  }
+
+  // The inverse LUT for video out (video colour to Log), kept apart from the monitoring LUTs.
+  playoutLutView() {
+    const l = this.cfg.playoutLut;
+    return l ? { name: l.name, size: l.size, input: l.input, output: l.output, version: l.version } : null;
+  }
+
+  loadPlayoutLut(path) {
+    if (statSync(path).size > 64e6) throw new Error('That file is too big to be a LUT');
+    const text = readFileSync(path, 'utf8');
+    const cube = parseCube(text);
+    const name = basename(path);
+    mkdirSync(join(this.dataDir, 'luts'), { recursive: true });
+    writeFileSync(join(this.dataDir, 'luts', 'video-out.cube'), text);
+    this.cfg.playoutLut = { name, size: cube.size, ...rangesFromName(name), version: Date.now() };
+    this.saveConfig();
+    this.log('info', `Video out LUT: ${name} (${cube.size}-point)`);
+    return this.playoutLutView();
+  }
+
+  clearPlayoutLut() {
+    if (this.cfg.playoutLut) {
+      delete this.cfg.playoutLut;
+      this.saveConfig();
+      rmSync(join(this.dataDir, 'luts', 'video-out.cube'), { force: true });
+      this.log('info', 'Video out LUT removed');
+    }
+    return null;
+  }
+
+  setPlayoutLutRange(input, output) {
+    const l = this.cfg.playoutLut;
+    if (!l) throw new Error('No video out LUT is loaded');
+    if (![input, output].every((v) => v === 'full' || v === 'legal')) throw new Error('Range must be full or legal');
+    this.cfg.playoutLut = { ...l, input, output, version: Date.now() };
+    this.saveConfig();
+    return this.playoutLutView();
+  }
+
+  playoutLutData() {
+    const l = this.cfg.playoutLut;
+    if (!l) return null;
+    const cube = parseCube(readFileSync(join(this.dataDir, 'luts', 'video-out.cube'), 'utf8'));
+    return { name: l.name, input: l.input, output: l.output, size: cube.size, min: cube.min, max: cube.max, data: cube.data };
+  }
+
+  setLutOn(bodyId, on) {
+    if (!this.findBody(bodyId)) throw new Error(`Unknown body "${bodyId}"`);
+    this.state.lutOn = { ...this.state.lutOn };
+    if (on) this.state.lutOn[bodyId] = true; else delete this.state.lutOn[bodyId];
+    this.saveStateSoon();
+    return this.state.lutOn;
   }
 
   // ---------- auto refresh ----------

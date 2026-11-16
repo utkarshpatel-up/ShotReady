@@ -4,6 +4,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { checkForUpdate, applyUpdate, repoOf } from './updater.mjs';
+import { Playout } from './playout.mjs';
+import { Preprocessor } from './preprocess.mjs';
+import { Streamer } from './stream.mjs';
 import { ShotReadyService } from '../core/service.mjs';
 import { AtemLink, FakeAtemLink } from '../core/atem.mjs';
 import { PROFILES } from '../core/engine.mjs';
@@ -14,7 +17,7 @@ const isDemo = process.argv.includes('--demo');
 // Lets the end-to-end test run against a throwaway data folder.
 const dataOverride = process.argv.find((a) => a.startsWith('--data-dir='))?.slice('--data-dir='.length);
 
-let win, bar, svc, sim;
+let win, bar, svc, sim, playout, preprocessor, streamer;
 
 const encrypt = (s) => {
   if (!safeStorage.isEncryptionAvailable()) throw new Error('Windows could not protect the password, so it was not saved');
@@ -85,19 +88,26 @@ const DEMO_FOCUS = [
   { status: true, level: 0, angle: 52, dir: 'behind', pos: { x: 5600, y: 5000, w: 1200, h: 2100 } },
 ];
 
+// Who each demo camera's people detection has found: two people on C80-2 (AF frame Spot) and on
+// C80-6 (AF frame Auto), so choosing a person by clicking can be tried.
+const DEMO_PEOPLE = {
+  1: [{ type: 'face', track: true, pos: { x: 3600, y: 4300, w: 900, h: 1400 } }, { type: 'face', track: false, pos: { x: 7000, y: 4500, w: 800, h: 1300 } }],
+  5: [{ type: 'face', track: true, pos: { x: 1800, y: 4500, w: 900, h: 1400 } }, { type: 'face', track: false, pos: { x: 8200, y: 4400, w: 800, h: 1300 } }],
+};
+
 async function startService() {
   const base = dataOverride || app.getPath('userData');
   if (isDemo) {
     const dataDir = dataOverride || join(base, 'demo');
     let tick = 0;
-    sim = await startSimulator(demoBodies().map((b, i) => ({ ...b, focus: DEMO_FOCUS[i], frame: () => demoFrame(i, tick++) })));
+    sim = await startSimulator(demoBodies().map((b, i) => ({ ...b, focus: DEMO_FOCUS[i], detect: DEMO_PEOPLE[i] || [], frame: () => demoFrame(i, tick++) })));
     for (const b of Object.values(sim.bodies)) b.frameDelayMs = 60;
     // Simulator ports change each launch, so a demo always starts from a clean config.
     const config = sim.config({ pollSeconds: 10 });
     config.locations.push({ label: 'Cam-09', atemInput: 9 }, { label: 'Cam-10', atemInput: 10 });
     const atem = new FakeAtemLink({
       modeName: 'P4KHDp25', modeLabel: '2160p25',
-      inputs: Object.fromEntries(config.locations.map((l) => [l.atemInput, l.label])),
+      inputs: { ...Object.fromEntries(config.locations.map((l) => [l.atemInput, l.label])), 3010: 'Media Player 1', 3020: 'Media Player 2' },
       mixEffects: [{ program: 1, preview: 2 }, { program: 5, preview: 3 }],
     });
     mkdirSync(dataDir, { recursive: true });
@@ -116,7 +126,7 @@ async function startService() {
   } else {
     const seed = JSON.parse(readFileSync(join(here, '../../config/cameras.default.json'), 'utf8'));
     svc = new ShotReadyService(base, { defaultConfig: seed, atem: new AtemLink(), encrypt, decrypt, decodeJpeg });
-    if (svc.cfg.atem?.ip) svc.atem.connect(svc.cfg.atem.ip).catch((e) => svc.log('red', `ATEM: ${e.message}`));
+    svc.startAtem();
   }
   const send = (name, payload) => {
     for (const w of [win, bar]) if (w && !w.isDestroyed()) w.webContents.send(`shotready:${name}`, payload);
@@ -127,6 +137,38 @@ async function startService() {
   svc.on('wave', (w) => send('wave', w));
   svc.on('focus', (f) => send('focus', f));
   svc.on('feedstat', (f) => send('feedstat', f));
+  // Video out: the output window on the HDMI display. Nothing opens until it is turned on. Clips can
+  // be pre-processed in the background by a hidden window of their own.
+  preprocessor = new Preprocessor({ page: join(here, '../renderer/preprocess.html'), preload: join(here, 'preload.cjs') });
+  playout = new Playout({
+    preprocessor, outDir: join(svc.dataDir, 'video-out'),
+    page: join(here, '../renderer/playout.html'), preload: join(here, 'preload.cjs'),
+    settings: () => svc.state.playout || {},
+    save: (patch) => { svc.state.playout = { ...svc.state.playout, ...patch }; svc.saveStateSoon(); },
+    profile: () => svc.profile,
+    lut: () => svc.playoutLutData(),
+    lutView: () => svc.playoutLutView(),
+    // A test machine has one display: the tests may use it as the output.
+    allowPrimary: !!(dataOverride && process.env.SHOTREADY_TEST_PLAYOUT),
+  });
+  playout.on('status', (s) => send('playout', s));
+  playout.on('note', (text) => svc.log('yellow', text));
+  playout.on('info', (text) => svc.log('info', text));
+  // Live stream: a video input on this computer, encoded in a hidden window of its own and sent to
+  // YouTube, a Zoom webinar or any RTMP server. Nothing is opened or sent until Go live is pressed.
+  streamer = new Streamer({
+    page: join(here, '../renderer/stream.html'), preload: join(here, 'preload.cjs'),
+    settings: () => svc.state.stream || {},
+    save: (patch) => { svc.state.stream = { ...svc.state.stream, ...patch }; svc.saveStateSoon(); },
+    encrypt, decrypt, lut: (gamma) => svc.lutData(gamma), version: app.getVersion(),
+    testFile: () => join(svc.dataDir, 'stream-test.flv'),
+    // A test hook, honoured only with a throwaway data folder: a test machine has no AAC encoder.
+    audioCodec: (dataOverride && process.env.SHOTREADY_TEST_STREAM_AUDIO) || undefined,
+  });
+  streamer.on('status', (s) => send('stream', s));
+  streamer.on('note', (text) => svc.log('yellow', text));
+  streamer.on('info', (text) => svc.log('info', text));
+  streamer.on('alarm', (text) => svc.log('red', text));
   svc.startLive();
   // Demo only: someone keeps adjusting C80-2's white balance, and C80-1 keeps drifting out of
   // focus and back, so live updates can be seen.
@@ -158,6 +200,7 @@ const api = {
     autoRefresh: svc.state.autoRefresh,
     pollSeconds: svc.cfg.pollSeconds,
     atem: svc.atemSummary(),
+    luts: svc.lutsView(),
     result: svc.lastResult,
     waves: svc.waves,
   }),
@@ -169,11 +212,16 @@ const api = {
   setControl: (id, key, value) => svc.setControl(id, key, value),
   setRecord: (id, on) => svc.setRecord(id, on),
   stepIso: (dir, id) => svc.stepIso(dir > 0 ? 1 : -1, id),
+  stepKelvin: (dir, id) => svc.stepKelvin(dir > 0 ? 1 : -1, id),
+  cutMediaPlayer: (n) => svc.cutMediaPlayer(Number(n)),
+  copyPreview: (from, to) => svc.copyPreview(from, to),
+  saveSettingsList: async (id) => { const path = await svc.saveSettingsList(id); shell.showItemInFolder(path); return path; },
+  copyApply: (from, to, keys) => svc.copyApply(from, to, Array.isArray(keys) ? keys.map(String) : []),
   menuKey: (key, id) => svc.menuKey(key, id),
   setKeyMode: (mode) => svc.setKeyMode(mode),
   applyFix: (id, check) => svc.applyFix(id, check),
   moveFocus: (id, dir) => svc.moveFocus(id, dir),
-  setFocusFrame: (id, x, y) => svc.setFocusFrame(id, x, y),
+  setFocusFrame: (id, x, y, opts) => svc.setFocusFrame(id, x, y, { person: !!opts?.person, frame: typeof opts?.frame === 'string' ? opts.frame : undefined }),
   defaultsPreview: () => svc.defaultsPreview(),
   defaultsApply: () => svc.defaultsApply(),
   wbPreview: (wb) => svc.wbPreview(wb),
@@ -196,6 +244,68 @@ const api = {
   saveSettings: (s) => svc.saveSettings(s),
   setAutoRefresh: (on) => svc.setAutoRefresh(on),
   atemInputs: () => svc.atemSummary().inputs || null,
+  atemSearch: () => svc.searchAtem(),
+  luts: () => svc.lutsView(),
+  lutLoad: async (gamma) => {
+    // The environment variable is a test hook, honoured only when a throwaway data folder is given.
+    if (dataOverride && process.env.SHOTREADY_TEST_LUT) return svc.loadLut(gamma, process.env.SHOTREADY_TEST_LUT);
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: `LUT for ${gamma}`, properties: ['openFile'], filters: [{ name: '3D LUT', extensions: ['cube'] }],
+    });
+    return canceled || !filePaths[0] ? null : svc.loadLut(gamma, filePaths[0]);
+  },
+  lutClear: (gamma) => svc.clearLut(gamma),
+  lutRange: (gamma, input, output) => svc.setLutRange(gamma, input, output),
+  lutData: (gamma) => svc.lutData(gamma),
+  setLutOn: (id, on) => svc.setLutOn(id, on),
+  playoutStatus: () => playout.status(),
+  playout: (cmd, arg) => playout.command(String(cmd), arg),
+  playoutOpen: async () => {
+    // The environment variable is a test hook, honoured only when a throwaway data folder is given.
+    let paths = dataOverride && process.env.SHOTREADY_TEST_VIDEO ? process.env.SHOTREADY_TEST_VIDEO.split('|') : null;
+    if (!paths) {
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+        title: 'Videos to add to the queue', properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'Video', extensions: ['mp4', 'm4v', 'mov', 'webm', 'mkv'] }, { name: 'All files', extensions: ['*'] }],
+      });
+      if (canceled || !filePaths.length) return null;
+      paths = filePaths;
+    }
+    return playout.command('add', paths);
+  },
+  playoutFolder: () => { mkdirSync(join(svc.dataDir, 'video-out'), { recursive: true }); return shell.openPath(join(svc.dataDir, 'video-out')); },
+  streamStatus: () => streamer.status(),
+  stream: (cmd, arg) => {
+    if (cmd === 'start') return streamer.start();
+    if (cmd === 'stop') return streamer.stop();
+    if (cmd === 'set') return streamer.set(arg || {});
+    if (cmd === 'key') return streamer.setKey(String(arg?.dest), arg?.key);
+    throw new Error('Unknown stream command');
+  },
+  streamShowTest: () => { shell.showItemInFolder(join(svc.dataDir, 'stream-test.flv')); return true; },
+  // From the hidden stream window.
+  streamReady: () => { streamer.pageReady(); return true; },
+  streamReport: (msg) => { streamer.report(msg || {}); return true; },
+  // From the hidden pre-processing window.
+  ppReady: () => { preprocessor.pageReady(); return true; },
+  ppRead: (id, offset, length) => preprocessor.read(String(id), Number(offset), Number(length)),
+  ppWrite: (id, bytes, position) => preprocessor.write(String(id), bytes, position === null || position === undefined ? null : Number(position)),
+  ppReport: (msg) => { preprocessor.report(msg || {}); return true; },
+  playoutLutLoad: async () => {
+    let path = dataOverride && process.env.SHOTREADY_TEST_PLAYOUT_LUT;
+    if (!path) {
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, { title: 'Inverse LUT for video out', properties: ['openFile'], filters: [{ name: '3D LUT', extensions: ['cube'] }] });
+      if (canceled || !filePaths[0]) return null;
+      path = filePaths[0];
+    }
+    svc.loadPlayoutLut(path);
+    return playout.command('lutChanged');
+  },
+  playoutLutClear: () => { svc.clearPlayoutLut(); return playout.command('lutChanged'); },
+  playoutLutRange: (input, output) => { svc.setPlayoutLutRange(input, output); return playout.command('lutChanged'); },
+  // From the output window.
+  playoutReady: () => { playout.restore(); return true; },
+  playoutReport: (state) => { playout.report(state || {}); return true; },
   copySheet: () => { clipboard.writeText(svc.sheetCsv().replace(/,/g, '\t').replace(/"/g, '')); return true; },
   exportSheet: async () => {
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
@@ -273,6 +383,21 @@ function setBar(on) {
   return !!on;
 }
 
+// Which graphics chip draws the pictures (and the LUTs), so it can be checked from the Log.
+async function logGraphics() {
+  try {
+    const status = app.getGPUFeatureStatus();
+    const info = await app.getGPUInfo('complete');
+    const device = info?.gpuDevice?.find((d) => d.active) || info?.gpuDevice?.[0];
+    const maker = { 0x8086: 'Intel', 0x10de: 'NVIDIA', 0x1002: 'AMD', 0x1414: 'Microsoft (software)' }[device?.vendorId];
+    const chip = info?.auxAttributes?.glRenderer || device?.deviceString || (maker ? `${maker} graphics` : 'no graphics chip found');
+    const hardware = /^enabled/.test(status.webgl || '') && /^enabled/.test(status.gpu_compositing || '');
+    svc.log(hardware ? 'info' : 'yellow', `Graphics: ${chip}. ${hardware ? 'Pictures and LUTs are drawn on it' : `Not hardware accelerated (WebGL ${status.webgl}), so a LUT may not be shown: pictures are then shown without it`}`);
+  } catch (e) {
+    svc.log('yellow', `Graphics: could not be read (${e.message})`);
+  }
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1500, height: 940, minWidth: 1000, minHeight: 640, backgroundColor: '#14161a', title: 'ShotReady',
@@ -281,8 +406,8 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.loadFile(join(here, '../renderer/index.html'));
-  // The bar is an extra view of the main window: closing the main window ends the app.
-  win.on('closed', () => { if (bar) bar.close(); });
+  // The bar and video out are extra views of the main window: closing the main window ends the app.
+  win.on('closed', () => { if (bar) bar.close(); playout?.stop(); preprocessor?.stop(); streamer?.close(); });
 }
 
 if (!app.requestSingleInstanceLock() && !dataOverride) {
@@ -300,7 +425,8 @@ if (!app.requestSingleInstanceLock() && !dataOverride) {
     }
     createWindow();
     if (svc.state.barOpen !== false) setBar(true);
+    logGraphics();
   });
   app.on('window-all-closed', () => app.quit());
-  app.on('before-quit', () => { svc?.stop(); svc?.atem?.disconnect(); sim?.close(); });
+  app.on('before-quit', () => { streamer?.close(); preprocessor?.stop(); playout?.stop(); svc?.stop(); svc?.atem?.disconnect(); sim?.close(); });
 }

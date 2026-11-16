@@ -15,9 +15,12 @@ button { -webkit-app-region: no-drag; font: inherit; color: var(--dim); backgrou
   text-align: center; border-radius: 4px; font-weight: 700; font-size: 12px; -webkit-app-region: no-drag; cursor: pointer; border: 1px solid var(--line);
 }
 .verdict small { font-weight: 400; color: var(--text); opacity: .85; font-size: 11px; }
-.verdict.ready { color: var(--green); border-color: var(--green); }
-.verdict.warnings { color: var(--yellow); border-color: var(--yellow); }
-.verdict.not-ready { color: var(--red); border-color: var(--red); }
+.verdict.ok { color: var(--green); border-color: var(--green); }
+.verdict.wait { color: var(--yellow); border-color: var(--yellow); }
+.verdict.bad { color: var(--red); border-color: var(--red); }
+.verdict.off { color: var(--dim); }
+.verdict small.red { color: var(--red); opacity: 1; }
+.verdict small.yellow { color: var(--yellow); opacity: 1; }
 .cells { flex: 1; min-width: 0; display: flex; gap: 4px; }
 .cell {
   flex: 1 1 0; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-top: 3px solid var(--line);

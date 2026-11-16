@@ -7,13 +7,14 @@
 const percent = (y) => Math.max(0, Math.round(((y - 16) / 219) * 100));
 
 // data is BGRA or RGBA: red and blue swap, which barely moves the result, so pass the real order.
-export function lumaStats(data, width, height, { bgra = true } = {}) {
+// Every step-th pixel each way is read: 2 for a full picture, 1 for one already read on a grid.
+export function lumaStats(data, width, height, { bgra = true, step = 2 } = {}) {
   const hist = new Uint32Array(256);
   const reds = new Uint32Array(256), greens = new Uint32Array(256), blues = new Uint32Array(256);
   const r = bgra ? 2 : 0, b = bgra ? 0 : 2;
   let sum = 0, n = 0;
-  for (let row = 0; row < height; row += 2) {
-    for (let col = 0; col < width; col += 2) {
+  for (let row = 0; row < height; row += step) {
+    for (let col = 0; col < width; col += step) {
       const i = (row * width + col) * 4;
       const y = Math.round(0.299 * data[i + r] + 0.587 * data[i + 1] + 0.114 * data[i + b]);
       hist[y]++;

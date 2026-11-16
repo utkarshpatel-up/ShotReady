@@ -38,9 +38,9 @@ export function demoBodies() {
     { id: 'C80-1', info: goodCamera({ 's.hardware.address': mac(1) }) },
     { id: 'C80-2', info: goodCamera({ 's.hardware.address': mac(2), 'c.1.lens.name': 'RF24-70mm F2 L IS USM', 'c.1.me.diaphragm': '200' }) },
     { id: 'C80-3', info: goodCamera({ 's.hardware.address': mac(3), 'c.1.gamma': 'canon709_bt709', 'c.1.lens.name': 'RF24-105mm F4 L IS USM' }) },
-    { id: 'C80-4', info: goodCamera({ 's.hardware.address': mac(4), 'f.rec.media1.status': 'unrecordable', 'f.rec.media1.remainingtime': '0', 'f.rec.media2.status': 'unrecordable', 'f.rec.media2.remainingtime': '0', 'f.timecode.frame': 'df' }) },
-    { id: 'C80-5', info: goodCamera({ 's.hardware.address': mac(5), 'c.1.wb.kelvin': '4300', 'f.rec.media2.status': 'unrecordable', 'f.rec.media2.remainingtime': '0', 'c.1.focus': 'auto', 'c.1.lens.focus': 'mf', 'c.1.focus.detect': 'off', 'c.1.me.iso': '6400', 'c.1.me.diaphragm': '400' }) },
-    { id: 'C80-6', info: goodCamera({ 's.hardware.address': mac(6), 's.power.source': 'battery', 's.power.volt': '', 's.power.percent': '62', 'f.rec.media1.status': 'unrecordable', 'f.rec.media1.remainingtime': '0', 'f.rec.media2.remainingtime': '35', 's.firmware': '1.0.6.0', 'c.1.eis': 'on' }) },
+    { id: 'C80-4', info: goodCamera({ 's.hardware.address': mac(4), 'c.1.lens.focus': 'mf', 'f.rec.media1.status': 'unrecordable', 'f.rec.media1.remainingtime': '0', 'f.rec.media2.status': 'unrecordable', 'f.rec.media2.remainingtime': '0', 'f.timecode.frame': 'df' }) },
+    { id: 'C80-5', info: goodCamera({ 's.hardware.address': mac(5), 'c.1.wb.kelvin': '4300', 'f.rec.media2.status': 'unrecordable', 'f.rec.media2.remainingtime': '0', 'c.1.focus': 'auto', 'c.1.focus.auto': 'continuous', 'c.1.lens.focus': 'mf', 'c.1.focus.detect': 'off', 'c.1.me.iso': '6400', 'c.1.me.diaphragm': '400' }) },
+    { id: 'C80-6', info: goodCamera({ 's.hardware.address': mac(6), 's.power.source': 'battery', 's.power.volt': '', 's.power.percent': '62', 'f.rec.media1.status': 'unrecordable', 'f.rec.media1.remainingtime': '0', 'f.rec.media2.remainingtime': '35', 's.firmware': '1.0.6.0', 'c.1.eis': 'on', 'c.1.focus.frame.1': 'auto' }) },
     { id: 'C80-7', offline: true, info: goodCamera({ 's.hardware.address': mac(7) }) },
     { id: 'C50-8', info: goodCamera({ 's.hardware': 'EOS C50', 's.firmware': '1.0.2.1', 's.hardware.address': mac(8), 'c.1.lens.name': 'RF28-70mm F2 L USM', 'f.tally': 'off', 'c.1.zoom.mode': 'mag', 'c.1.zoom.mag': '200', 'c.1.gamma.list': 'clog2_cgamut,clog3_cgamut,canon709_bt709' }) },
   ];
@@ -58,7 +58,7 @@ export async function startSimulator(bodies, infoPath = '/-wvhttp-01-/info.cgi')
   const live = {};
   for (const b of bodies) {
     const entry = {
-      ...b, requests: 0, methods: [], subs: new Set(), metaSubs: new Set(), frameDelayMs: 0, frames: 0, controls: [], focus: b.focus || null,
+      ...b, requests: 0, methods: [], subs: new Set(), metaSubs: new Set(), frameDelayMs: 0, frames: 0, controls: [], focus: b.focus || null, detect: b.detect || [],
       // Changes settings the way an operator would, and pushes them to open streams.
       update(items) {
         entry.info = { ...entry.info, ...items };
@@ -71,7 +71,8 @@ export async function startSimulator(bodies, infoPath = '/-wvhttp-01-/info.cgi')
         entry.metaSubs.clear();
       },
       // What the camera's focus guide reports. null means no focus guide (auto focus).
-      metaDoc: () => ({ version: '3.0.0', timestamp: '1.000', realtime: '1.000', detect: [], fguide: entry.focus ? [entry.focus] : [] }),
+      // detect: the people the camera's subject detection has found; track marks the one it follows.
+      metaDoc: () => ({ version: '3.0.0', timestamp: '1.000', realtime: '1.000', detect: entry.detect, fguide: entry.focus ? [entry.focus] : [] }),
       setFocus(focus) {
         entry.focus = focus;
         for (const res of entry.metaSubs) res.write(encodeMsgpack(entry.metaDoc()));
@@ -117,6 +118,13 @@ export async function startSimulator(bodies, infoPath = '/-wvhttp-01-/info.cgi')
         entry.controls.push(items);
         const refused = entry.refuse && Object.keys(items).some((k) => entry.refuse.includes(k));
         if (!refused) entry.update(items);
+        // A camera following people switches to the one the AF frame was moved onto.
+        if (!refused && entry.detect.length && 'c.1.focus.frame.1.x' in items) {
+          const [fx, fy] = [Number(items['c.1.focus.frame.1.x']), Number(items['c.1.focus.frame.1.y'])];
+          const near = entry.detect.reduce((a, d) => (Math.hypot(d.pos.x - fx, d.pos.y - fy) < Math.hypot(a.pos.x - fx, a.pos.y - fy) ? d : a));
+          entry.detect = entry.detect.map((d) => ({ ...d, track: d === near }));
+          if (!entry.focus) for (const res of entry.metaSubs) res.write(encodeMsgpack(entry.metaDoc()));
+        }
         if (!refused && entry.focus && 'c.1.focus.frame.1.x' in items) entry.setFocus({ ...entry.focus, pos: { ...entry.focus.pos, x: Number(items['c.1.focus.frame.1.x']), y: Number(items['c.1.focus.frame.1.y']) } });
         if (!refused && entry.focus && items['c.1.focus.action'] === 'one_shot') entry.setFocus({ ...entry.focus, level: 2, angle: 0 });
         res.writeHead(200, { 'content-type': 'text/plain', 'livescope-status': refused ? '403 Invalid Parameter Value' : '0' });

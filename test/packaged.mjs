@@ -18,11 +18,11 @@ for (let i = 0; i < 300 && !win; i++) {
 const errors = [];
 win.on('pageerror', (e) => errors.push(e.message));
 try {
-  await win.waitForSelector('#verdict', { timeout: 60000 });
+  await win.waitForSelector('#atem-status', { timeout: 60000 });
   assert.equal(await win.locator('#demo').isHidden(), true);
   assert.equal(await win.locator('.card').count(), 8);
   console.log('ok - starts in live mode with the 8 labels from cameras.json');
-  console.log('     verdict:', await win.locator('#verdict').textContent());
+  console.log('     ATEM:', await win.locator('#atem-status').textContent(), '· camera checks:', await win.locator('#checks-sum .ck-count').textContent());
 
   await win.locator('.setup button').click();
   await win.waitForFunction(() => document.querySelectorAll('.card select')[0]?.value === 'Cam-01', null, { timeout: 60000 });

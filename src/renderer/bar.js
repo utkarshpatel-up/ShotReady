@@ -1,7 +1,16 @@
 // Always-on-top strip: a few essential values per camera. Camera text goes in through
 // textContent only.
 const api = window.shotready;
-const WORDS = { ready: 'READY', warnings: 'WARNINGS', 'not-ready': 'NOT READY' };
+// The left of the strip says whether the ATEM is connected, the same as the main window.
+function atemWord(a) {
+  if (a?.connected) return ['ok', 'CONNECTED'];
+  if (a && !a.enabled) return ['off', 'NO ATEM'];
+  if (a?.configured) return ['bad', 'ATEM LOST'];
+  if (a?.searching || a?.trying || !a?.notFound) return ['wait', 'SEARCHING'];
+  return ['bad', 'NO ATEM'];
+}
+let atem = null;
+let last = null;
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -50,21 +59,29 @@ function cell(l) {
   return c;
 }
 
+function renderStatus() {
+  const v = document.getElementById('verdict');
+  const [cls, word] = atemWord(atem);
+  v.className = `verdict ${cls}`;
+  const checks = !last ? '' : last.reds || last.yellows ? `${last.reds ? `${last.reds} red` : ''}${last.reds && last.yellows ? ' ' : ''}${last.yellows ? `${last.yellows} yel` : ''}` : 'checks ok';
+  v.replaceChildren(document.createTextNode(word), el('small', last?.reds ? 'red' : last?.yellows ? 'yellow' : '', checks));
+  v.title = `${atem?.connected ? `ATEM connected: ${atem.name || ''} ${atem.ip}` : 'ATEM not connected'}. Camera checks: ${last ? `${last.reds} red, ${last.yellows} yellow` : 'not run yet'}. Click to open ShotReady.`;
+}
+
 function render(r) {
   if (!r) return;
-  const v = document.getElementById('verdict');
-  v.className = `verdict ${r.verdict}`;
-  v.replaceChildren(document.createTextNode(WORDS[r.verdict]), el('small', '', r.profile));
-  v.title = `${r.reds} red, ${r.yellows} yellow. Click to open ShotReady.`;
+  last = r;
+  renderStatus();
   document.getElementById('cells').replaceChildren(...r.labels.filter((l) => l.body).map(cell));
 }
 
 document.getElementById('bar-close').onclick = () => api.call('setBar', false);
 document.getElementById('verdict').onclick = () => api.call('showMain');
 api.on('result', render);
+api.on('atem', (a) => { atem = a; renderStatus(); });
 // Levels change constantly, so only their text is touched, not the whole strip.
 api.on('wave', ({ body, wave }) => {
   if (wave) waves[body] = wave; else delete waves[body];
   for (const v of document.querySelectorAll('[data-wfm]')) if (v.dataset.wfm === body) v.lastChild.nodeValue = fmtWave(wave);
 });
-api.call('init').then((init) => { waves = { ...init.waves }; render(init.result); });
+api.call('init').then((init) => { waves = { ...init.waves }; atem = init.atem; renderStatus(); render(init.result); });

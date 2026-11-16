@@ -7,7 +7,7 @@ import { sep } from 'node:path';
 const WORKER = fileURLToPath(new URL('./camera-worker.mjs', import.meta.url)).replace(`app.asar${sep}`, `app.asar.unpacked${sep}`);
 
 export class CameraThread {
-  /** @param on { viewers(n), state(state, reason), wave(jpegBuffer), stats(frames), failed(message) } */
+  /** @param on { viewers(n), state(state, reason), level(wave), wave(jpegBuffer), note(text), stats(frames), failed(message) } */
   constructor(id, { url, auth }, on) {
     this.id = id;
     this.base = null;
@@ -20,7 +20,9 @@ export class CameraThread {
         if (m.type === 'ready') { this.base = m.base; resolve(m.base); }
         else if (m.type === 'viewers') on.viewers?.(m.n);
         else if (m.type === 'state') on.state?.(m.state, m.reason);
+        else if (m.type === 'level') on.level?.(m.wave);
         else if (m.type === 'wave') on.wave?.(Buffer.from(m.jpeg));
+        else if (m.type === 'note') on.note?.(m.text);
         else if (m.type === 'stats') on.stats?.(m.frames);
       });
     });

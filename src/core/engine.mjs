@@ -74,6 +74,7 @@ export function summarize(info) {
     nd: info['c.1.nd.filter'] || '?',
     tally: info['f.tally'] || '?',
     focusMode: info['c.1.focus'] || '',
+    continuousAf: 'c.1.focus' in info ? (continuousAf(info) ? 'on' : 'off') : '',
     lensFocus: info['c.1.lens.focus'] || '',
     detect: info['c.1.focus.detect'] || '',
     recCodec: info['f.rec.format.media1'] || '?',
@@ -138,7 +139,8 @@ export function checkCamera(s, loc, profile, std) {
     if (mm) add('yellow', 'Recording format', `Slot ${mm.slot} records ${fmtVideo(mm.videoinfo)}`);
   }
 
-  if (s.powerPercent && Number(s.powerPercent) < 30) add('yellow', 'Battery', `${s.powerPercent}%`);
+  // Only while running on the battery: on USB-C or DC power a low battery is just charging.
+  if (s.power?.battery && s.powerPercent && Number(s.powerPercent) < 30) add('yellow', 'Battery', `${s.powerPercent}%`);
   return r;
 }
 
@@ -216,6 +218,7 @@ export function essentials(info, s, std) {
     wb: s.wbMode === 'kelvin' ? `${s.wbKelvin}K${s.wbTint && s.wbTint !== '0' ? ` ${s.wbTint}` : ''}` : s.wbMode,
     iso: s.iso,
     isoOver: base > 0 && Number(s.iso) > base,
+    baseIso: base > 0 ? base : null,
     shutter: s.shutterMode === 'speed' ? `1/${s.shutter}` : s.shutterMode,
     shutterBad: s.shutterMode !== 'speed' || Number(s.shutter) !== Number({ ...DEFAULT_STANDARDS, ...std }.shutterSpeed),
     aperture: !raw ? null : n >= 100 ? `F${n / 100}` : n > 0 ? `F${n}` : raw,
@@ -228,26 +231,59 @@ function signed(v) {
   return Number(v) > 0 ? `+${Number(v)}` : String(Number(v));
 }
 
-// s.power.volt is in tenths: 195 means 19.5 V. Anything other than DC counts as battery.
-function powerOf(info) {
-  const source = info['s.power.source'];
+// Where the camera's power comes from. A C80 has a DC barrel input and reports 'dc'. A C50 has no
+// DC input: it runs on USB-C Power Delivery (Canon PD-E2) or its LP-E6 battery, so its outside power
+// does not say 'dc'. Only a source that names a battery counts as battery; any other source is
+// outside power, named as the camera reports it. s.power.volt is in tenths: 195 means 19.5 V.
+const OUTSIDE_POWER = [[/usb|pd/i, 'USB-C'], [/dc|ac|adapter|ext/i, 'DC']];
+export function powerOf(info) {
+  const source = String(info['s.power.source'] || '').trim();
   if (!source) return null;
-  if (source === 'dc') return { battery: false, text: info['s.power.volt'] ? `DC ${Number(info['s.power.volt']) / 10} V` : 'DC' };
-  return { battery: true, text: info['s.power.percent'] ? `Battery ${info['s.power.percent']}%` : 'Battery' };
+  const pct = info['s.power.percent'] || '';
+  if (/batt|^bp|^lp/i.test(source)) return { battery: true, source, percent: pct, text: pct ? `Battery ${pct}%` : 'Battery' };
+  const name = OUTSIDE_POWER.find(([re]) => re.test(source))?.[1] || source.toUpperCase();
+  const v = Number(info['s.power.volt']) / 10;
+  const volts = v >= 3 && v <= 30 ? ` ${v} V` : '';
+  return { battery: false, source, percent: pct, text: `${name}${volts}${pct ? `  ·  battery ${pct}%` : ''}` };
 }
 
 // Whether focus can be pushed closer or further from here, and why not if it cannot.
 export function focusDrive(info) {
   if (!(info['c.1.focus.action.list'] || '').split(',').includes('near')) return null;
   if (info['c.1.lens.focus'] === 'mf') return { ok: false, why: 'The lens switch is on MF' };
-  if (info['c.1.focus'] === 'auto') return { ok: false, why: 'Continuous AF is on' };
+  if (continuousAf(info)) return { ok: false, why: 'Continuous AF is on' };
   return { ok: true };
 }
 
-// Whether the AF frame can be placed from here. On Auto the camera picks the place itself.
+// Continuous AF is on only when the focus mode is auto AND its auto mode is continuous, which is how
+// Canon remotes switch it on (c.1.focus=auto&c.1.focus.auto=continuous). c.1.focus=auto with any other
+// c.1.focus.auto is not Continuous AF. A camera that does not report c.1.focus.auto is judged on
+// c.1.focus alone.
+export function continuousAf(info) {
+  if (info['c.1.focus'] !== 'auto') return false;
+  const mode = info['c.1.focus.auto'];
+  return mode === undefined || mode === '' || mode === 'continuous';
+}
+
+// Whether 1-Shot AF can be done from here, and the command for it. The XC command is
+// control.cgi?c.1.focus.action=one_shot: one_shot is a focus action, and c.1.focus itself only takes
+// auto or manual. Canon's remotes send it whatever the focus mode is (One Shot AF focuses "regardless
+// of the status before clicking"), so the only thing that stops it here is the lens switch on MF,
+// where the camera cannot drive focus at all. It is separate from pushing focus closer or further.
+const ONE_SHOT = /^one_?shot/i;
+export function oneShotAf(info) {
+  const actions = (info['c.1.focus.action.list'] || '').split(',').filter(Boolean);
+  if (!actions.length && !('c.1.focus' in info)) return null;
+  if (info['c.1.lens.focus'] === 'mf') return { ok: false, why: 'The lens switch is on MF. Set it to AF for 1-Shot AF' };
+  return { ok: true, params: { 'c.1.focus.action': actions.find((v) => ONE_SHOT.test(v)) || 'one_shot' }, continuous: continuousAf(info) };
+}
+
+// Whether the AF frame can be placed from here. On Auto (Whole Area AF) the camera picks the place
+// itself, so there is no box position to set.
+export const AUTO_FRAME_WHY = 'The camera\'s AF frame is set to Auto (Whole Area AF), so the camera chooses what to focus on and the box cannot be placed. To focus where you click, set AF frame to Spot or Zone under Adjust';
 export function focusFrame(info) {
   if (info['c.1.focus.frame.1.x.max'] === undefined) return null;
-  if (info['c.1.focus.frame.1'] === 'auto') return { ok: false, why: 'The AF frame is on Auto' };
+  if (info['c.1.focus.frame.1'] === 'auto') return { ok: false, auto: true, why: AUTO_FRAME_WHY };
   return { ok: true };
 }
 
@@ -282,6 +318,11 @@ export function cameraControls(info) {
   if (info['c.1.me.iso.mode'] !== 'auto' && info['c.1.me.isogain.mode'] !== 'gain') add('c.1.me.iso', 'ISO');
   add('c.1.nd.filter', 'ND', (v) => (v === '0' ? 'Off' : `1/${Number(v) / 100}`));
   if (info['c.1.me.diaphragm.mode'] !== 'auto') add('c.1.me.diaphragm', 'Iris', (v) => `F${Number(v) / 100}`);
+  // Saturation, under whichever key this camera reports it (the custom picture settings differ by
+  // model), and only where the camera says it takes changes.
+  const sat = Object.keys(info).find((k) => isSaturation(k) && (info[`${k}.list`] !== undefined || info[`${k}.min`] !== undefined));
+  if (sat && info[`${sat}.list`] !== undefined) add(sat, 'Saturation', (v) => (/^-?\d+$/.test(v) ? signed(v) : v));
+  else if (sat) range(sat, 'Saturation', signed);
   add('c.1.focus.frame.1', 'AF frame', (v) => AF_FRAMES[v] || v);
   add('m.onscreen', 'OSD', (v) => (v === 'on' ? 'On' : 'Off'));
   return out;
@@ -343,6 +384,37 @@ export function checkFixes(info, standards) {
     if (value) offer('Base ISO range', `Set Base ISO ${numberOf(value)}`, [[baseKey, value]]);
   }
   return fixes;
+}
+
+// Copying one camera's look to another: the picture settings only (gamma, white balance, Base ISO
+// and ISO, shutter, ND, and the picture's detail and saturation settings), never what belongs to the
+// body or the recording (iris, sensor mode, codec, timecode). In this order: a mode goes before its
+// value, and a setting before its finer parts (White balance, then Kelvin, then Tint).
+const LOOK = ['c.1.gamma', 'c.1.hlgcolor', 'c.1.over100', 'c.1.lookfile', 'c.1.wb', 'c.1.me.baseiso', 'c.1.me.iso', 'c.1.me.isogain', 'c.1.me.gain',
+  'c.1.me.shutter', 'c.1.nd', 'c.1.knee', 'c.1.blackgamma', 'c.1.blacklevel', 'c.1.colormatrix', 'c.1.colorcorrection', 'c.1.saturation',
+  'c.1.skindetail', 'c.1.lowkeysaturation', 'c.1.ac', 'c.1.nr'];
+const COPY_NAMES = {
+  'c.1.gamma': 'Gamma', 'c.1.lookfile': 'Look file', 'c.1.wb': 'White balance', 'c.1.wb.kelvin': 'Kelvin', 'c.1.wb.kelvin.cc': 'Tint',
+  'c.1.me.baseiso': 'Base ISO', 'c.1.me.iso': 'ISO', 'c.1.me.iso.mode': 'ISO mode', 'c.1.me.isogain.mode': 'ISO / gain', 'c.1.me.gain': 'Gain',
+  'c.1.me.shutter': 'Shutter', 'c.1.me.shutter.mode': 'Shutter mode', 'c.1.nd.filter': 'ND', 'c.1.knee': 'Knee', 'c.1.blacklevel': 'Black level',
+};
+export const copyName = (k) => COPY_NAMES[k] || k.replace(/^c\.1\./, '').replace(/[._]/g, ' ');
+const isSaturation = (k) => /^c\.1\.(?:[a-z0-9_]+\.)*saturation$/i.test(k) && !/lowkey/i.test(k);
+const lookRank = (k) => {
+  const i = LOOK.findIndex((p) => k === p || k.startsWith(`${p}.`));
+  return i >= 0 ? i : isSaturation(k) ? LOOK.indexOf('c.1.saturation') : -1;
+};
+const settable = (key, info) => info[`${key}.list`] !== undefined || info[`${key}.min`] !== undefined;
+
+export function copyPlan(from, to) {
+  const rows = [];
+  for (const [key, value] of Object.entries(from)) {
+    if (isMetaKey(key) || lookRank(key) < 0 || !(key in to) || to[key] === value) continue;
+    const ok = settable(key, to) && validateOnBody(key, value, to);
+    rows.push({ key, name: copyName(key), from: value, now: to[key], ok, why: ok ? null : settable(key, to) ? 'this camera does not offer that value now' : 'cannot be set from here' });
+  }
+  const order = (r) => [lookRank(r.key), /\.mode$/.test(r.key) ? 0 : 1, r.key.length];
+  return rows.sort((a, b) => { const x = order(a), y = order(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || a.key.localeCompare(b.key); });
 }
 
 export function extractCopySettings(info) {

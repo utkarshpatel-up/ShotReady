@@ -1,9 +1,10 @@
 // Smoke test: drives the real Electron app in demo mode and takes screenshots.
 // Usage: npm run test:e2e [-- screenshotDir]
 import { _electron as electron } from 'playwright-core';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
+import { readMp4 } from '../src/core/mp4.mjs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
@@ -14,7 +15,14 @@ const electronPath = createRequire(import.meta.url)('electron');
 const ok = (name) => console.log(`ok - ${name}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const app = await electron.launch({ executablePath: electronPath, args: ['.', '--demo', `--data-dir=${data}`] });
+// A test LUT that turns every pixel red, so the picture shows at a glance whether it is applied.
+const redLut = join(data, 'red-test.cube');
+writeFileSync(redLut, ['LUT_3D_SIZE 2', ...Array(8).fill('1.0 0.0 0.0')].join('\n'));
+// Chromium's software GPU stands in for a graphics card, so the LUT view runs on a test machine too.
+const app = await electron.launch({
+  executablePath: electronPath, args: ['.', '--demo', `--data-dir=${data}`, '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+  env: { ...process.env, SHOTREADY_TEST_LUT: redLut, SHOTREADY_TEST_PLAYOUT: '1', SHOTREADY_TEST_VIDEO: `${resolve('test/fixtures/bars.webm')}|${resolve('test/fixtures/bars.mp4')}`, SHOTREADY_TEST_PLAYOUT_LUT: redLut, SHOTREADY_TEST_STREAM_AUDIO: 'opus' },
+});
 const pageOf = async (name) => {
   for (let i = 0; i < 300; i++) {
     const w = app.windows().find((x) => x.url().endsWith(name));
@@ -34,11 +42,13 @@ const box = (body) => card(body).locator('.fbox');
 const loaded = (body) => card(body).locator('img').evaluate((i) => i.naturalWidth > 0);
 
 try {
-  await win.waitForSelector('#verdict', { timeout: 20000 });
+  await win.waitForSelector('#atem-status', { timeout: 20000 });
   await win.waitForFunction(() => document.querySelector('#check').textContent === 'Run check');
   assert.equal(await win.locator('.card').count(), 8);
-  assert.equal(await win.locator('#verdict').textContent(), 'NOT READY');
-  ok('dashboard: one card per camera, verdict shown');
+  assert.equal(await win.locator('#atem-status').textContent(), 'CONNECTED');
+  assert.match(await win.locator('.atem-status').textContent(), /ATEM 2 M\/E Constellation 4K · simulated · 2160p25/);
+  assert.match(await win.locator('#checks-sum').textContent(), /Camera checks.*\d+ red.*Connection \(C80-7\)/);
+  ok('dashboard: one card per camera, ATEM CONNECTED top left, camera checks beside it with their reasons');
 
   // 1. Live pictures on the cards, and they keep running while the screen rebuilds.
   await win.waitForFunction(() => [...document.querySelectorAll('.card:not(.offline) img')].every((i) => i.naturalWidth > 0), null, { timeout: 10000 });
@@ -54,6 +64,11 @@ try {
   assert.equal(await loaded('C80-2'), true);
   assert.match(await card('C80-2').locator('.ffps').textContent(), /\d+ fps/, 'frames still arriving');
   ok(`live pictures on 7 cameras at ${fps} fps, and they survive screen updates`);
+  await win.waitForFunction(() => /\d+% avg \d+%/.test(document.querySelector('[data-wfm="C80-2"]')?.textContent || ''), null, { timeout: 8000 });
+  const log = await win.evaluate(() => window.shotready.call('events'));
+  assert.ok(!log.some((e) => /measured on the main thread/.test(e.text)), 'no camera fell back to the main thread');
+  assert.ok(log.some((e) => /Threads: the main thread, 8 camera threads/.test(e.text)));
+  ok(`waveform measured in the camera threads: C80-2 ${await card('C80-2').locator('[data-wfm]').textContent()}`);
   await win.screenshot({ path: join(shots, '1-dashboard.png') });
 
   // 2. Focus box: green when in focus, red when not, none in auto focus.
@@ -64,6 +79,10 @@ try {
   assert.match(await card('C80-2').locator('.fchip').textContent(), /IN FOCUS/);
   assert.match(await card('C80-3').locator('.fchip').textContent(), /OUT OF FOCUS · front focus/);
   assert.match(await card('C80-4').locator('.fchip').textContent(), /back focus/);
+  assert.match(await card('C80-4').locator('.facts').textContent(), /FocusMF/, 'C80-4 has its lens on MF');
+  assert.equal(await card('C80-5').locator('.iso-over').textContent(), '6400', 'ISO above the Base ISO is red');
+  assert.equal(await card('C80-1').locator('.iso-over').count(), 0);
+  assert.equal(await box('C80-4').isVisible(), true, 'a camera on MF still shows where its focus is');
   assert.match(await card('C80-5').locator('.fchip').textContent(), /Focus not detected/);
   const was = await box('C80-1').getAttribute('class');
   await win.waitForFunction((w) => document.querySelector('.card[data-body="C80-1"] .fbox').className !== w, was, { timeout: 6000 });
@@ -106,6 +125,67 @@ try {
   assert.equal((await names())[0], 'C80-3', 'the new order survives a screen update');
   ok('camera cards can be dragged and stay where they are put');
 
+  // A press low on the page leaves the page where it is, through the rebuilds that follow.
+  await win.setViewportSize({ width: 1200, height: 700 });
+  await sleep(300);
+  const view = () => win.evaluate(() => document.getElementById('view').scrollTop);
+  await win.evaluate(() => { const v = document.getElementById('view'); v.scrollTop = v.scrollHeight; });
+  const low = await view();
+  assert.ok(low > 300, `the page scrolls (${low})`);
+  const last = await win.locator('.card').last().getAttribute('data-body');
+  await card(last).locator('.one-shot-btn').click();
+  await sleep(3500); // C80-2's white balance changes every 3 s, which rebuilds the cards
+  assert.equal(await view(), low, '1-Shot AF does not move the page');
+  await card(last).locator('.adjust-btn').click();
+  await sleep(500);
+  assert.ok(Math.abs((await view()) - low) < 5, 'Adjust does not jump to the top either');
+  await card(last).locator('.adjust-btn').click();
+  await win.setViewportSize({ width: 1500, height: 940 });
+  ok('pressing a button on a card low on the page keeps the page where it is');
+
+  // AF frame on Auto: said on the picture, and a click focuses (the camera picks the subject).
+  await win.evaluate(() => { document.getElementById('view').scrollTop = 0; });
+  assert.equal(await card('C80-6').locator('.fframe').isVisible(), true);
+  assert.equal(await card('C80-1').locator('.fframe').isVisible(), false);
+  await card('C80-6').locator('.feed').click();
+  await win.waitForFunction(() => /1-Shot AF done.*AF frame is on Auto/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
+  await win.evaluate(() => { document.getElementById('toast').hidden = true; });
+  await card('C80-6').locator('.feed').click();
+  await sleep(800);
+  assert.equal(await win.locator('#toast').isHidden(), true, 'the explanation is not repeated on every click');
+  ok('AF frame on Auto: shown on the picture, a click does 1-Shot AF, and the notice is not repeated');
+
+  // People: the camera's detected people are drawn, the one under the cursor is the one a click picks,
+  // and the AF frame goes onto that person.
+  await win.evaluate(() => { document.getElementById('view').scrollTop = 0; });
+  await win.waitForFunction(() => document.querySelectorAll('.card[data-body="C80-2"] .fperson').length === 2, null, { timeout: 5000 });
+  const feed2 = card('C80-2').locator('.feed');
+  const size = await feed2.boundingBox();
+  await feed2.hover({ position: { x: size.width * 0.68, y: size.height * 0.5 } });
+  await win.waitForFunction(() => document.querySelectorAll('.card[data-body="C80-2"] .fperson')[1]?.classList.contains('hover'), null, { timeout: 3000 });
+  assert.equal(await card('C80-2').locator('.fperson.hover').count(), 1);
+  await card('C80-2').screenshot({ path: join(shots, '7-people.png') });
+  await feed2.click({ position: { x: size.width * 0.68, y: size.height * 0.5 } });
+  const centre = () => box('C80-2').evaluate((b) => [parseFloat(b.style.left) + parseFloat(b.style.width) / 2, parseFloat(b.style.top) + parseFloat(b.style.height) / 2]);
+  await win.waitForFunction(() => { const b = document.querySelector('.card[data-body="C80-2"] .fbox'); return Math.abs(parseFloat(b.style.left) + parseFloat(b.style.width) / 2 - 70) < 1; }, null, { timeout: 5000 });
+  const [cx, cy] = await centre();
+  assert.ok(Math.abs(cy - 45) < 1, `the AF frame is on the person's face, not the click (${cx}, ${cy})`);
+  await win.waitForFunction(() => document.querySelectorAll('.card[data-body="C80-2"] .fperson')[1]?.classList.contains('track'), null, { timeout: 3000 });
+  ok('people: the person under the cursor is highlighted, and a click puts the AF frame on that person');
+
+  // AF frame on Auto: a click on a person offers a type that can be placed, and one button does it.
+  const feed6 = card('C80-6').locator('.feed');
+  const size6 = await feed6.boundingBox();
+  await feed6.click({ position: { x: size6.width * 0.82, y: size6.height * 0.46 } });
+  await win.waitForSelector('#toast .toast-act', { timeout: 5000 });
+  assert.match(await win.locator('#toast').textContent(), /AF frame is on Auto, so People Priority picks the person itself/);
+  assert.equal(await win.locator('#toast .toast-act').textContent(), 'Use Zone AF frame');
+  await win.locator('#toast .toast-act').click();
+  await win.waitForFunction(() => /AF frame set to Zone and on the person you clicked/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
+  await win.waitForFunction(() => document.querySelector('.card[data-body="C80-6"] .fframe').hidden, null, { timeout: 8000 });
+  await win.waitForFunction(() => { const b = document.querySelector('.card[data-body="C80-6"] .fbox'); return Math.abs(parseFloat(b.style.left) + parseFloat(b.style.width) / 2 - 82) < 1; }, null, { timeout: 5000 });
+  ok('people with the AF frame on Auto: one button sets Zone and focuses the person clicked');
+
   // Adjust one camera from its card.
   await card('C80-1').locator('.adjust-btn').click();
   await win.waitForSelector('.card[data-body="C80-1"] .adjust select');
@@ -118,6 +198,139 @@ try {
   await card('C80-1').locator('.adjust-btn').click();
   await win.waitForFunction(() => !document.querySelector('.card[data-body="C80-1"] .adjust'), null, { timeout: 5000 });
   ok('Adjust changes shutter and ISO on a camera and closes again');
+
+  // Record: one click starts, one click stops. Nothing asks first.
+  const rec = card('C80-3').locator('.rec-btn');
+  await rec.click();
+  await win.waitForFunction(() => /Recording/.test([...document.querySelectorAll('.card')].find((c) => /C80-3/.test(c.textContent))?.querySelector('.rec-btn')?.textContent || ''), null, { timeout: 10000 });
+  await rec.click();
+  await win.waitForFunction(() => /REC/.test([...document.querySelectorAll('.card')].find((c) => /C80-3/.test(c.textContent))?.querySelector('.rec-btn')?.textContent || ''), null, { timeout: 10000 });
+  assert.equal(await win.locator('.rec-btn.armed').count(), 0);
+  ok('record: one click starts and one click stops, with no question');
+
+  // Copy settings: C80-1 takes C80-2's picture settings back (its ISO and shutter were changed above).
+  await card('C80-1').locator('.adjust-btn').click();
+  await card('C80-1').locator('.copy-row select').selectOption('C80-2');
+  await card('C80-1').locator('.copy-row button').click();
+  await win.waitForSelector('.dialog .copy-list');
+  const copyNames = await win.locator('.dialog .copy-list tbody td:nth-child(2)').allTextContents();
+  assert.ok(copyNames.includes('ISO') && copyNames.includes('Shutter'), copyNames.join());
+  assert.ok(!copyNames.includes('diaphragm'), 'iris is not copied');
+  await win.locator('.dialog button', { hasText: /^Copy \d+ setting/ }).click();
+  await win.waitForFunction(() => /Copied to C80-1/.test(document.querySelector('.dialog')?.textContent || ''), null, { timeout: 10000 });
+  await win.locator('.dialog button', { hasText: 'Close' }).click();
+  await win.waitForFunction(() => { const t = document.querySelector('.card[data-body="C80-1"] .facts').textContent; return /ISO800/.test(t) && t.includes('1/50'); }, null, { timeout: 8000 });
+  await card('C80-1').locator('.adjust-btn').click();
+  ok('copy settings: shows what will change, then copies it from one camera to another');
+
+  // Keys: D steps Kelvin on the camera on preview, F1 cuts Media Player 1 to program.
+  await win.locator('#tabs button', { hasText: 'Dashboard' }).focus();
+  await win.keyboard.press('d');
+  await win.waitForFunction(() => /^C80-2: \d+ K$/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
+  assert.equal(await card('C80-1').locator('.badge.pgm').count(), 1);
+  await win.keyboard.press('F1');
+  await win.waitForFunction(() => /Media Player 1 cut to program/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
+  await win.waitForFunction(() => !document.querySelector('.card[data-body="C80-1"] .badge.pgm'), null, { timeout: 5000 });
+  ok('keys: D steps Kelvin on the camera on preview, F1 cuts Media Player 1 to program');
+
+  // Laptop video: its switcher input cannot be a camera's.
+  await tab('Settings');
+  const laptop = win.locator('input[aria-label="Laptop video ATEM input"]');
+  await laptop.fill('2');
+  await win.locator('#save-settings').click();
+  await win.waitForFunction(() => /Cam-02 and the laptop video point at the same ATEM input \(2\)/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
+  await laptop.fill('12');
+  await win.locator('#save-settings').click();
+  await win.waitForFunction(() => document.getElementById('toast').textContent === 'Settings saved', null, { timeout: 10000 });
+  ok('laptop video: its own switcher input, refused when a camera label already uses it');
+
+  // Video out: a clip through the inverse LUT, on the output display.
+  await tab('Video out');
+  await win.waitForFunction(() => /Output display:/.test(document.getElementById('view').textContent), null, { timeout: 5000 });
+  assert.match(await win.locator('#view').textContent(), /ATEM input 12 \(Laptop video/);
+  const section = (title) => win.locator('.section', { has: win.locator('h2', { hasText: new RegExp(`^${title}$`) }) });
+  await win.locator('button', { hasText: 'Add videos…' }).click();
+  await win.waitForFunction(() => document.querySelectorAll('.vo-queue tr').length === 2, null, { timeout: 5000 });
+  assert.match(await section('Player').textContent(), /bars\.webm/, 'the first clip added is in the player');
+  assert.match(await win.locator('#view').textContent(), /None loaded: the video goes out as it is, in colour/);
+  await section('Player').locator('label', { hasText: 'Loop' }).locator('input').check();
+  // No LUT yet: a warning, and the video goes out all the same.
+  await win.locator('button', { hasText: '▶ Play' }).click();
+  await win.waitForFunction(() => /Playing without a LUT/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
+  const out = await pageOf('playout.html');
+  await win.waitForFunction(() => /PLAYING/.test(document.querySelector('.vo-live')?.textContent || ''), null, { timeout: 10000 });
+  await sleep(600);
+  const shotColour = (png) => app.evaluate(({ nativeImage }, b64) => {
+    const img = nativeImage.createFromBuffer(Buffer.from(b64, 'base64'));
+    const { width, height } = img.getSize();
+    const px = img.toBitmap();
+    let r = 0, g = 0, n = 0;
+    for (let y = Math.floor(height * 0.3); y < height * 0.7; y += 8) for (let x = Math.floor(width * 0.2); x < width * 0.8; x += 8) { const i = (y * width + x) * 4; g += px[i + 1]; r += px[i + 2]; n++; }
+    return { r: r / n, g: g / n };
+  }, png.toString('base64'));
+  const asIs = await shotColour(await out.screenshot());
+  assert.ok(asIs.g > 60, `without a LUT the clip still goes out, as it is (${JSON.stringify(asIs)})`);
+  await win.locator('button', { hasText: 'Load .cube…' }).click();
+  await win.waitForFunction(() => /red-test\.cube \(2-point\)/.test(document.getElementById('view').textContent), null, { timeout: 5000 });
+  await sleep(600);
+  const playing = await shotColour(await out.screenshot());
+  assert.ok(playing.r > 200 && playing.g < 40, `with the LUT loaded the clip goes out through it (${JSON.stringify(playing)})`);
+  await out.screenshot({ path: join(shots, '8-video-out.png') });
+  await win.locator('button', { hasText: 'Stop (black)' }).click();
+  await sleep(500);
+  const stopped = await shotColour(await out.screenshot());
+  assert.ok(stopped.r < 10 && stopped.g < 10, `black after Stop (${JSON.stringify(stopped)})`);
+  await section('Player').locator('label', { hasText: 'Loop' }).locator('input').uncheck();
+  ok('video out: plays without a LUT (with a warning), then through the LUT on the output display, black on Stop');
+
+  // Pre-processing: a copy of the MP4 with the LUT in every frame, the sound kept, played instead.
+  const mp4row = win.locator('.vo-queue tr', { hasText: 'bars.mp4' });
+  await mp4row.locator('button', { hasText: 'Pre-process' }).click();
+  await win.waitForFunction(() => /Pre-processed ✓/.test(document.querySelector('.vo-queue')?.textContent || ''), null, { timeout: 60000 });
+  const made = readdirSync(join(data, 'video-out')).filter((f) => f.endsWith('.mp4'));
+  assert.equal(made.length, 1);
+  const copy = readFileSync(join(data, 'video-out', made[0]));
+  const parsed = await readMp4(async (o, l) => copy.subarray(o, o + l), copy.length);
+  assert.ok(/^avc1\./.test(parsed.video.codec) && parsed.video.count === 50, `the copy has every frame (${parsed.video.codec}, ${parsed.video.count})`);
+  assert.equal(parsed.audio?.entryType, 'Opus', 'the copy keeps the sound');
+  await mp4row.locator('button', { hasText: 'Put in the player' }).click();
+  await win.waitForFunction(() => /playing the pre-processed copy/.test(document.getElementById('view').textContent), null, { timeout: 5000 });
+  await win.screenshot({ path: join(shots, '9-video-out-tab.png') });
+  ok('pre-processing: the MP4 is copied with the LUT in every frame and its sound, and the copy is what plays');
+
+  // The queue: the next clip plays by itself at the end of one, and a clip can be removed.
+  await win.locator('label', { hasText: 'Next clip plays automatically' }).locator('input').check();
+  await win.locator('.vo-queue tr', { hasText: 'bars.webm' }).locator('button', { hasText: 'Put in the player' }).click();
+  await win.waitForFunction(() => /bars\.webm/.test(document.querySelector('.vo-queue tr.cued')?.textContent || ''), null, { timeout: 5000 });
+  await win.locator('button', { hasText: '▶ Play' }).click();
+  await win.waitForFunction(() => /bars\.mp4/.test(document.querySelector('.vo-queue tr.cued')?.textContent || '') && /PLAYING/.test(document.querySelector('.vo-live')?.textContent || ''), null, { timeout: 15000 });
+  await win.locator('.vo-queue tr', { hasText: 'bars.webm' }).locator('button[title="Remove from the queue"]').click();
+  await win.waitForFunction(() => document.querySelectorAll('.vo-queue tr').length === 1, null, { timeout: 5000 });
+  await win.locator('button', { hasText: 'Output on' }).click();
+  for (let i = 0; i < 50 && app.windows().some((w) => w.url().endsWith('playout.html')); i++) await sleep(100);
+  assert.equal(app.windows().some((w) => w.url().endsWith('playout.html')), false, 'the output window closes when the output is turned off');
+  await tab('Dashboard');
+  ok('queue: the next clip plays by itself at the end of one, clips can be removed, and the output closes when off');
+
+  // Live stream: the test destination on this computer, from a simulated video device. The test
+  // machine has no AAC encoder, so the sound is encoded as Opus here (a test hook).
+  await win.locator('#tabs button', { hasText: 'Stream' }).click();
+  await win.waitForSelector('.st-go');
+  await win.waitForFunction(() => document.querySelector('.st-preview')?.videoWidth > 0, null, { timeout: 10000 });
+  await win.locator('.seg button', { hasText: 'YouTube' }).click();
+  await win.locator('.st-go').click();
+  await win.waitForFunction(() => /Enter the stream key/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
+  await win.locator('.seg button', { hasText: 'Test on this computer' }).click();
+  await win.locator('.st-go').click();
+  await win.waitForFunction(() => /LIVE/.test(document.querySelector('#tabs').textContent) && /Arriving: [1-9]/.test(document.getElementById('view').textContent), null, { timeout: 20000 });
+  await win.waitForTimeout(3000);
+  await win.screenshot({ path: join(shots, '10-stream.png') });
+  await win.locator('.st-go').click();
+  await win.waitForFunction(() => /The test received: \d+ pictures/.test(document.getElementById('view').textContent), null, { timeout: 10000 });
+  const received = await win.evaluate(() => window.shotready.call('streamStatus'));
+  assert.ok(received.state === 'off' && received.test.frames >= 40 && received.test.keyFrames >= 2 && received.test.sound && received.test.audioFrames > 50 && received.test.width === 1920, JSON.stringify(received.test));
+  assert.ok(!/LIVE/.test(await win.locator('#tabs').textContent()));
+  ok(`stream: refused without a key, then ${received.test.frames} pictures and ${received.test.audioFrames} blocks of sound sent to the test server, from its own threads, and stopped with one click`);
 
   // Set all cameras.
   await tab('Checks');
@@ -133,6 +346,39 @@ try {
   await tab('Dashboard');
   await win.waitForFunction(() => document.querySelector('.card[data-body="C80-5"] .facts').textContent.includes('5600 K'), null, { timeout: 10000 });
   ok('Send WB shows what will change and applies it');
+
+  // Monitoring LUT: off until it is turned on, drawn on the graphics card, only on that camera.
+  const colour = async (body) => {
+    const png = await card(body).locator('.feed').screenshot();
+    return app.evaluate(({ nativeImage }, b64) => {
+      const img = nativeImage.createFromBuffer(Buffer.from(b64, 'base64'));
+      const { width, height } = img.getSize();
+      const px = img.toBitmap();
+      let r = 0, g = 0, n = 0;
+      for (let y = Math.floor(height * 0.3); y < height * 0.7; y += 4) for (let x = Math.floor(width * 0.1); x < width * 0.9; x += 4) { const i = (y * width + x) * 4; g += px[i + 1]; r += px[i + 2]; n++; }
+      return { r: r / n, g: g / n };
+    }, png.toString('base64'));
+  };
+  assert.equal(await card('C80-2').locator('.lut-btn').isDisabled(), true, 'no LUT loaded yet');
+  await tab('Settings');
+  await win.locator('table.luts tr', { hasText: 'clog2_cgamut' }).locator('button', { hasText: 'Load' }).click();
+  await win.waitForFunction(() => /red-test\.cube \(2-point\)/.test(document.querySelector('table.luts')?.textContent || ''), null, { timeout: 5000 });
+  await tab('Dashboard');
+  await win.waitForSelector('.card[data-body="C80-2"] .lut-btn:not([disabled])');
+  assert.equal(await win.locator('canvas.flut').count(), 0, 'loading a LUT changes no picture by itself');
+  // A camera that loses its last viewer has its focus connection closed, which shows as no focus.
+  await win.evaluate(() => { window.focusDrops = 0; window.shotready.on('focus', (e) => { if (e.body === 'C80-2' && !e.focus) window.focusDrops++; }); });
+  await card('C80-2').locator('.lut-btn').click();
+  await win.waitForFunction(() => /^LUT · \d+ fps/.test(document.querySelector('.card[data-body="C80-2"] .ffps')?.textContent || ''), null, { timeout: 8000 });
+  await sleep(500);
+  const red = await colour('C80-2'), plain = await colour('C80-1');
+  assert.ok(red.r > 200 && red.g < 40, `C80-2 is drawn through the LUT (${JSON.stringify(red)})`);
+  assert.ok(Math.abs(plain.r - plain.g) < 20, `C80-1 keeps its plain picture (${JSON.stringify(plain)})`);
+  await win.screenshot({ path: join(shots, '6-lut.png') });
+  await card('C80-2').locator('.lut-btn').click();
+  await win.waitForFunction(() => !document.querySelector('.card[data-body="C80-2"] canvas.flut') && document.querySelector('.card[data-body="C80-2"] img').naturalWidth > 0, null, { timeout: 5000 });
+  assert.equal(await win.evaluate(() => window.focusDrops), 0, 'switching the LUT on and off never dropped the camera\'s focus connection');
+  ok('monitoring LUT: loaded per gamma, drawn on the graphics card for one camera, and off again');
 
   // 5. The always-on-top bar still works.
   const bar = await pageOf('bar.html');

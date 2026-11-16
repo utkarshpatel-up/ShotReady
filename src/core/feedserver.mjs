@@ -39,10 +39,15 @@ export class FeedServer {
       return;
     }
     const body = decodeURIComponent(match[2]);
+    // The LUT view reads the feed with fetch from the app's own page (a file:// page, whose origin is
+    // "null"), which needs permission to read it. Only that origin is given it; the per-run key and
+    // the Host check above still keep everything else out.
+    const origin = req.headers.origin;
     res.writeHead(200, {
       'Content-Type': `multipart/x-mixed-replace; boundary=${BOUNDARY}`,
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
+      ...(origin === 'null' || origin === 'file://' ? { 'Access-Control-Allow-Origin': origin } : {}),
     });
     res.flushHeaders(); // the viewer is connected even before the first frame exists
     req.socket.setNoDelay(true);
