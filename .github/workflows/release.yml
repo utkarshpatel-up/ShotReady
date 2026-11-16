@@ -1,0 +1,69 @@
+name: Release
+
+# Push a tag like v1.9.0 to build the Windows installer and portable zip on GitHub
+# and publish them on that tag's release. If a draft release for the tag already
+# exists (with its notes), the files are added to it and it is published.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check the tag matches package.json
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $v"
+            exit 1
+          fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build installer
+        run: npm run dist:win
+
+      - name: Build portable zip
+        run: npm run dist:zip
+
+      - name: Checksums
+        shell: bash
+        working-directory: dist
+        run: |
+          setup="ShotReady-$VERSION-Windows-Setup.exe"
+          zip="ShotReady-$VERSION-Windows-Portable.zip"
+          ls -l "$setup" "$zip"
+          sha256sum -b "$setup" "$zip" > "ShotReady-$VERSION-SHA256.txt"
+          cat "ShotReady-$VERSION-SHA256.txt"
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: dist
+        run: |
+          tag="$GITHUB_REF_NAME"
+          files=("ShotReady-$VERSION-Windows-Setup.exe" "ShotReady-$VERSION-Windows-Portable.zip" "ShotReady-$VERSION-SHA256.txt")
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+            gh release edit "$tag" --draft=false --latest
+          else
+            gh release create "$tag" "${files[@]}" --title "ShotReady $VERSION" --generate-notes --latest
+          fi
