@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, appendF
 import { join, basename } from 'node:path';
 import {
   PROFILES, DEFAULT_STANDARDS, OLD_DEFAULT_GAMMA, parseInfo, summarize, checkCamera, extractCopySettings, diffAgainstRef,
-  bodyIdentity, matchCameras, verdictOf, mandatoryChecks, essentials, shortLens, defaultsPlan, digitalIsPlan, wbPlan, validateOnBody, cameraControls, recordState, focusDrive, focusFrame, oneShotAf, continuousAf, checkFixes, fmtVideo, copyPlan,
+  bodyIdentity, matchCameras, verdictOf, mandatoryChecks, essentials, shortLens, defaultsPlan, digitalIsPlan, wbPlan, validateOnBody, cameraControls, recordState, focusDrive, focusFrame, oneShotAf, continuousAf, checkFixes, fmtVideo, copyPlan, atemVideoFormat, resolutionControl, resolutionFor,
 } from './engine.mjs';
 import { httpGet } from './http.mjs';
 import { CameraStream } from './stream.mjs';
@@ -19,7 +19,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const HOST_RE = /^[A-Za-z0-9.-]+(:\d{1,5})?$/;
 const LOG_KEEP = 500;
 const SWITCHERS = {
-  constellation: { name: 'Constellation', sdi: '3840x2160:25000:P' },
+  constellation: { name: 'Constellation' },
   '2me': { name: '2 M/E 2RU' },
 };
 // What the screen needs to know about a focus action: whether it can be done, and why not.
@@ -294,7 +294,8 @@ export class ShotReadyService extends EventEmitter {
   #evaluate({ report = false, pushed = false } = {}) {
     const profile = PROFILES[this.profile];
     const sw = SWITCHERS[this.state.switcher];
-    const checkProfile = sw.sdi ? { ...profile, sdi: sw.sdi, sdiWhy: sw.name } : profile;
+    const target = this.sdiTarget();
+    const checkProfile = target.why ? { ...profile, sdi: target.sdi, sdiWhy: target.why } : profile;
     const byId = this.reads;
     const reads = this.cfg.bodies.map((b) => byId[b.id]).filter(Boolean);
     this.trackOnlineChanges(reads);
@@ -347,6 +348,7 @@ export class ShotReadyService extends EventEmitter {
         ref: ref ? { fromBody: ref.fromBody, time: ref.time } : null, diffCount,
         essentials: rb.error ? null : essentials(rb.info, rb.summary, this.std),
         controls: rb.error ? null : cameraControls(rb.info),
+        sdi: rb.error ? null : { now: fmtVideo(rb.summary?.output), want: fmtVideo(target.sdi), settable: !!resolutionControl(rb.info) },
         record: rb.error ? null : recordState(rb.info),
         focusDrive: rb.error ? null : focusDrive(rb.info),
         focusFrame: rb.error ? null : focusFrame(rb.info),
@@ -362,7 +364,7 @@ export class ShotReadyService extends EventEmitter {
       // Shown on the card so a spare can be readied, but not counted until it is on a label.
       const known = this.state.bodies[rb.body.id] || {};
       const checks = rb.error ? [] : [...checkCamera(rb.summary, {}, checkProfile, std), ...mandatoryChecks(rb.info, rb.summary, this.std, known.confirmed)];
-      spares.push({ body: rb.body.id, ip: rb.body.ip, online: !rb.error, summary: rb.summary || null, results, checks, spare: true, essentials: rb.error ? null : essentials(rb.info, rb.summary, this.std), controls: rb.error ? null : cameraControls(rb.info), record: rb.error ? null : recordState(rb.info), focusDrive: rb.error ? null : focusDrive(rb.info), focusFrame: rb.error ? null : focusFrame(rb.info), oneShot: rb.error ? null : okWhy(oneShotAf(rb.info)) });
+      spares.push({ body: rb.body.id, ip: rb.body.ip, online: !rb.error, summary: rb.summary || null, results, checks, spare: true, essentials: rb.error ? null : essentials(rb.info, rb.summary, this.std), controls: rb.error ? null : cameraControls(rb.info), sdi: rb.error ? null : { now: fmtVideo(rb.summary?.output), want: fmtVideo(target.sdi), settable: !!resolutionControl(rb.info) }, record: rb.error ? null : recordState(rb.info), focusDrive: rb.error ? null : focusDrive(rb.info), focusFrame: rb.error ? null : focusFrame(rb.info), oneShot: rb.error ? null : okWhy(oneShotAf(rb.info)) });
     }
 
     for (const c of [...labels, ...spares]) {
@@ -1062,6 +1064,8 @@ export class ShotReadyService extends EventEmitter {
     if (!option) throw new Error(`${bodyId} does not offer that value`);
     // The display may go out on SDI, which feeds the switcher, so this applies in Mixer mode as well.
     if (key === 'm.onscreen' && value === 'on' && this.isLive(bodyId)) throw new Error(`${bodyId} is live: the on-screen display would show on air`);
+    // A new resolution drops the camera's signal for a moment: never on air.
+    if (control.name === 'Resolution' && this.isLive(bodyId)) throw new Error(`${bodyId} is live: changing its resolution would drop its picture on air`);
     await this.control(body, { [key]: value });
     this.log('info', `${bodyId}: ${control.name} set to ${option.text}`);
     // The camera pushes the change as well; this covers a camera whose stream is down.
@@ -1097,6 +1101,8 @@ export class ShotReadyService extends EventEmitter {
       const applied = [], failed = t.manual.map((m) => ({ name: m.name, reason: m.why }));
       for (const c of t.steps) {
         if (!c.supported) { failed.push({ name: c.name, reason: 'not supported on this camera' }); continue; }
+        // A new resolution drops the camera's signal for a moment: never on air.
+        if (c.name === 'SDI output' && this.isLive(t.body)) { failed.push({ name: c.name, reason: 'camera is live: set it when it is off air' }); continue; }
         try {
           await this.control(body, { [c.key]: c.value });
           applied.push(c.name);
@@ -1111,17 +1117,31 @@ export class ShotReadyService extends EventEmitter {
     return results;
   }
 
+  // The SDI format the cameras must send: the ATEM's own video mode when it is connected (the
+  // cameras must match the switcher), else the show profile's.
+  sdiTarget() {
+    const atem = this.atemSummary();
+    const fromAtem = atem.connected ? atemVideoFormat(atem.modeName) : null;
+    return fromAtem ? { sdi: fromAtem, why: `the ATEM (${atem.modeLabel})` } : { sdi: PROFILES[this.profile].output, why: null };
+  }
+
+  // SDI output goes with the default settings where the camera offers its resolution as a setting;
+  // otherwise it is listed, to be set on the camera.
   #defaultTargets() {
-    const sdi = SWITCHERS[this.state.switcher].sdi || PROFILES[this.profile].output;
-    const manualFor = (info) => (info['f.output1.videoinfo'] === sdi ? [] : [{
-      name: 'SDI output', value: fmtVideo(sdi), from: fmtVideo(info['f.output1.videoinfo']), supported: false, why: 'set this on the camera',
+    const { sdi } = this.sdiTarget();
+    const resStep = (info) => {
+      const ctl = resolutionControl(info), value = resolutionFor(ctl, sdi);
+      return ctl && value && info['f.output1.videoinfo'] !== sdi ? [{ key: ctl.key, name: 'SDI output', value }] : [];
+    };
+    const manualFor = (info) => (info['f.output1.videoinfo'] === sdi || resolutionFor(resolutionControl(info), sdi) ? [] : [{
+      name: 'SDI output', value: fmtVideo(sdi), from: fmtVideo(info['f.output1.videoinfo']), supported: false, why: 'this camera does not take it over the network: set it on the camera',
     }]);
-    return this.#bulkTargets((info) => defaultsPlan(this.std, info), manualFor);
+    return this.#bulkTargets((info) => [...defaultsPlan(this.std, info), ...resStep(info)], manualFor);
   }
 
   defaultsPreview() {
     const value = (key) => defaultsPlan(this.std).find((p) => p.key === key).value;
-    const sdi = SWITCHERS[this.state.switcher].sdi || PROFILES[this.profile].output;
+    const { sdi } = this.sdiTarget();
     return { ...this.#defaultTargets(), defaults: { sdi: fmtVideo(sdi), gamma: value('c.1.gamma'), shutter: `1/${value('c.1.me.shutter')}` } };
   }
 

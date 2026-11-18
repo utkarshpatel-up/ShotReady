@@ -208,7 +208,7 @@ With no menu open, W and S change ISO as usual. Nothing is sent to a camera on p
 At the top of the Checks tab:
 
 - **Set default settings on all cameras** sends the team's gamma, shutter, ND 0, Tele-converter OFF and
-  Digital IS OFF to every reachable camera. SDI output can only be set on the camera, so it is listed if wrong.
+  Digital IS OFF to every reachable camera. SDI output is set to match the ATEM's video mode on a camera that takes its resolution over the network (never one on program); a camera that does not, such as a C80 on firmware 1.0.6.1, is listed, to be set in its menu.
 - **Send WB to all cameras** sends the Kelvin and tint you type.
 
 Each shows what will change first, and Send always sends every setting, even one a camera already has.
@@ -248,7 +248,7 @@ Monitoring stops for a few seconds during an update, so do it between shows.
 ## Mandatory settings
 
 Checked on every camera: Gamma flat (any Canon Log passes, any colour gamma is red, because the
-recorder must never get a colour picture), SDI output (3840x2160 whenever Constellation is selected),
+recorder must never get a colour picture), SDI output (the ATEM's own video mode when it is connected, else the profile's),
 Digital IS off, Tele-converter off and Base ISO range at or above the ISO.
 
 A value the camera reports decides the row. If the Base ISO cannot be compared (for example it is

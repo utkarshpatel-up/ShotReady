@@ -325,6 +325,8 @@ export function cameraControls(info) {
   else if (sat) range(sat, 'Saturation', signed);
   add('c.1.focus.frame.1', 'AF frame', (v) => AF_FRAMES[v] || v);
   add('m.onscreen', 'OSD', (v) => (v === 'on' ? 'On' : 'Off'));
+  const res = resolutionControl(info);
+  if (res) out.push({ key: res.key, name: 'Resolution', value: res.value, options: res.list.map((value) => ({ value, text: resText(value) })) });
   return out;
 }
 
@@ -342,6 +344,44 @@ export function defaultsPlan(standards, info = {}) {
     ...(keys.digitalIS || []).filter((k) => k in info).map((key) => ({ key, name: 'Digital IS', value: 'off', onOff: true })),
   ];
 }
+
+// The format the cameras' SDI output must have for an ATEM video mode such as P1080p25 or P4KHDp25,
+// written as the camera reports it (f.output1.videoinfo, e.g. 3840x2160:25000:P). Null if unknown.
+const ATEM_SIZES = { '720': '1280x720', '1080': '1920x1080', '4KHD': '3840x2160', '8KHD': '7680x4320' };
+export function atemVideoFormat(modeName) {
+  const m = /^[A-Z]?(720|1080|4KHD|8KHD)([pi])(\d+)$/.exec(modeName || '');
+  if (!m) return null;
+  const n = m[3], rate = { 2398: 23980, 2997: 29970, 5994: 59940 }[n] ?? Number(n) * 1000;
+  return `${ATEM_SIZES[m[1]]}:${rate}:${m[2].toUpperCase()}`;
+}
+
+// The camera's output resolution, where the camera offers it as a setting it takes over the
+// network: a key about resolution or output format whose list holds both a 4K and an HD value.
+// A real C80 (firmware 1.0.6.1) offers none, so its SDI output is set on the camera; this finds one
+// on a camera or firmware that does, without guessing a key name.
+const RES_KEY = /(resolution|videoinfo|sdi|output\d*\.(format|res|signal|video))/i;
+const isUhd = (v) => /3840|4096|2160|4k|uhd|dci/i.test(v);
+const isHd = (v) => !isUhd(v) && /1920|1080|fhd|(^|[^a-z])hd/i.test(v);
+export function resolutionControl(info) {
+  for (const k of Object.keys(info).sort()) {
+    if (!k.endsWith('.list')) continue;
+    const key = k.slice(0, -5);
+    if (!RES_KEY.test(key) || /media\d|proxy|rec\.format/i.test(key)) continue;
+    const list = String(info[k]).split(',').filter(Boolean);
+    if (list.some(isUhd) && list.some(isHd)) return { key, value: info[key] ?? '', list };
+  }
+  return null;
+}
+// The value of that setting for a wanted SDI format (3840x2160:25000:P): the same value when the
+// camera lists it, else its UHD or HD entry.
+export function resolutionFor(ctl, want) {
+  if (!ctl || !want) return null;
+  if (ctl.list.includes(want)) return want;
+  const uhd = /2160/.test(want);
+  const cands = ctl.list.filter(uhd ? isUhd : isHd);
+  return cands.find((v) => (uhd ? /3840|uhd/i : /1920|fhd/i).test(v)) || cands[0] || null;
+}
+const resText = (v) => (/^\d+x\d+:\d+:[PI]$/.test(v) ? fmtVideo(v) : v);
 
 // Digital IS on or off, under the first key this camera reports it by. On is the camera's own first
 // On mode (cameras report on1, on2…): on1 when it says nothing, as read from a real C80.

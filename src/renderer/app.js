@@ -485,6 +485,15 @@ function copyRow(c) {
   return h('div', { class: 'copy-row' }, h('span', {}, 'Copy settings from'), from, h('button', { class: 'small', onclick: () => showCopy(from.value, c.body) }, 'Compare…'));
 }
 
+// Where the camera cannot take its resolution over the network, Adjust says so, with what it sends
+// now and what the switcher needs. Where it can, Resolution is one of the settings below.
+function sdiRow(c) {
+  if (!c.sdi || c.sdi.settable) return null;
+  const ok = c.sdi.now === c.sdi.want;
+  return h('div', { class: `dis-row${ok ? '' : ' warn-text'}` },
+    `SDI output ${c.sdi.now}${ok ? '' : `, needs ${c.sdi.want}`}: this camera does not take its resolution over the network. Set it in the camera's menu.`);
+}
+
 // Digital IS on or off on every camera at once, from any camera's Adjust panel.
 function digitalIsRow(c) {
   const now = c.results?.find((r) => r.check === 'Digital IS')?.detail?.match(/^(ON|OFF)/i)?.[1];
@@ -553,7 +562,7 @@ async function showCopy(from, to) {
 
 // Dropdowns for one camera, opened with Adjust. A change goes to the camera as soon as it is picked.
 function adjustPanel(c) {
-  return h('div', { class: 'adjust' }, copyRow(c), digitalIsRow(c), c.controls.map((ctl) => {
+  return h('div', { class: 'adjust' }, copyRow(c), digitalIsRow(c), sdiRow(c), c.controls.map((ctl) => {
     const known = ctl.options.some((o) => o.value === ctl.value);
     return h('label', {}, ctl.name, h('select', {
       'aria-label': `${ctl.name} on ${c.body}`,
@@ -909,7 +918,7 @@ async function showBulk(kind) {
   const offline = h('div', { class: 'empty' });
   const note = h('div', { class: 'note' }, isWb
     ? 'Sets every reachable camera to Kelvin white balance with this value and tint. This changes the cameras straight away, so do it between shows.'
-    : `Sends Gamma ${first.defaults.gamma}, Shutter ${first.defaults.shutter}, ND 0, Tele-converter OFF and Digital IS OFF to every reachable camera. SDI output ${first.defaults.sdi} can only be set on the camera. White balance is not touched. This changes the cameras straight away, so do it between shows.`);
+    : `Sends Gamma ${first.defaults.gamma}, Shutter ${first.defaults.shutter}, ND 0, Tele-converter OFF and Digital IS OFF to every reachable camera. SDI output ${first.defaults.sdi} (to match the switcher) is sent to a camera that takes its resolution over the network, except one on program; any other is listed, to be set in its menu. White balance is not touched. This changes the cameras straight away, so do it between shows.`);
 
   const send = async (e) => {
     e.target.disabled = true;

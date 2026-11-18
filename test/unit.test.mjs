@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ShotReadyService } from '../src/core/service.mjs';
 import dgram from 'node:dgram';
-import { checkCamera, summarize, PROFILES, DEFAULT_STANDARDS, mandatoryChecks, oneShotAf, continuousAf, copyPlan, digitalIsPlan, cameraControls, essentials, powerOf } from '../src/core/engine.mjs';
+import { checkCamera, summarize, PROFILES, DEFAULT_STANDARDS, mandatoryChecks, oneShotAf, continuousAf, copyPlan, digitalIsPlan, cameraControls, atemVideoFormat, resolutionControl, resolutionFor, essentials, powerOf } from '../src/core/engine.mjs';
 import { findAtems, parseDns, atemsInAnswer, sweepTargets, mdnsQuery } from '../src/core/atem-discovery.mjs';
 import { decodeJpeg } from '../src/core/jpeg.mjs';
 import { parseCube, rangesFromName } from '../src/core/cube.mjs';
@@ -571,4 +571,41 @@ test('RTMP: commands, chunks, addresses, and a stream that arrives whole', async
   assert.match(await closed, /closed/);
   await assert.rejects(new RtmpPublisher({ url: 'rtmp://127.0.0.1:9/live', key: 'k', connectMs: 3000 }).connect(), /refused|reached/);
   await server.close();
+});
+
+test('SDI output: the cameras must match the ATEM\'s own video mode, and a settable resolution is offered', async () => {
+  assert.equal(atemVideoFormat('P1080p25'), '1920x1080:25000:P');
+  assert.equal(atemVideoFormat('P4KHDp25'), '3840x2160:25000:P');
+  assert.equal(atemVideoFormat('P1080p5994'), '1920x1080:59940:P');
+  assert.equal(atemVideoFormat('N1080i50'), '1920x1080:50000:I');
+  assert.equal(atemVideoFormat('weird'), null);
+
+  // Constellation at 1080p25: 1080p25 cameras pass, a 2160p25 one is red for the ATEM's format.
+  const atem = new FakeAtemLink({ modeName: 'P1080p25', modeLabel: '1080p25', inputs: { 1: 'Cam-01' }, mixEffects: [{ program: 5, preview: 6 }] });
+  const svc = new ShotReadyService(mkdtempSync(join(tmpdir(), 'shotready-')), { defaultConfig: sim.config({ pollSeconds: 3600 }), dupDelayMs: 1, atem });
+  await svc.assignInOrder();
+  await svc.setSwitcher('constellation');
+  let r = await svc.setProfile('HD25');
+  assert.match(find(rowsFor(r, 'Cam-01'), 'SDI output').detail, /^3840x2160 25p but the ATEM \(1080p25\) needs 1920x1080 25p$/);
+  for (const b of Object.values(sim.bodies)) b.info = { ...b.info, 'f.output1.videoinfo': '1920x1080:25000:P' };
+  r = await svc.check({ force: true });
+  assert.equal(find(rowsFor(r, 'Cam-01'), 'SDI output').status, 'green');
+  for (const b of Object.values(sim.bodies)) b.info = { ...b.info, 'f.output1.videoinfo': '3840x2160:25000:P' };
+  await svc.check({ force: true });
+
+  // A camera with no resolution setting gets SDI output listed in the default settings, to set by
+  // hand; one with a resolution setting gets it sent with the rest.
+  assert.equal(resolutionControl(sim.bodies['C80-1'].info), null);
+  let plan = svc.defaultsPreview().targets.find((t) => t.body === 'C80-1');
+  assert.equal(plan.changes.find((c) => c.name === 'SDI output').supported, false);
+  const info = { 'c.1.rec.resolution': '3840x2160', 'c.1.rec.resolution.list': '3840x2160,1920x1080', 'f.rec.media1.videoinfo.list': '3840x2160,1920x1080' };
+  assert.equal(resolutionControl(info).key, 'c.1.rec.resolution', 'never a media slot');
+  assert.equal(resolutionFor(resolutionControl(info), '1920x1080:25000:P'), '1920x1080');
+  assert.equal(resolutionFor({ list: ['4k_uhd', 'fhd'] }, '3840x2160:25000:P'), '4k_uhd');
+  assert.deepEqual(cameraControls(info).find((c) => c.name === 'Resolution').options.map((o) => o.value), ['3840x2160', '1920x1080']);
+  sim.bodies['C80-1'].info = { ...sim.bodies['C80-1'].info, ...info };
+  await svc.check({ force: true });
+  plan = svc.defaultsPreview().targets.find((t) => t.body === 'C80-1');
+  assert.deepEqual(plan.steps.find((c) => c.name === 'SDI output'), { ...plan.steps.find((c) => c.name === 'SDI output'), key: 'c.1.rec.resolution', value: '1920x1080', supported: true });
+  assert.equal(plan.manual.length, 0);
 });
