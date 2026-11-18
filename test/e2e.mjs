@@ -199,6 +199,20 @@ try {
   await win.waitForFunction(() => !document.querySelector('.card[data-body="C80-1"] .adjust'), null, { timeout: 5000 });
   ok('Adjust changes shutter and ISO on a camera and closes again');
 
+  // Digital IS for every camera, from one camera's Adjust panel. C80-6 starts with it on.
+  await card('C80-2').locator('.adjust-btn').click();
+  await win.waitForSelector('.card[data-body="C80-2"] .dis-row');
+  await card('C80-2').locator('.dis-row button', { hasText: 'Off' }).click();
+  await win.waitForFunction(() => /Digital IS OFF: .*C80-6/.test(document.getElementById('toast').textContent), null, { timeout: 10000 });
+  await win.waitForFunction(() => /\(C80-2: OFF\)/.test(document.querySelector('.card[data-body="C80-2"] .dis-row')?.textContent || ''), null, { timeout: 10000 });
+  await card('C80-2').locator('.dis-row button', { hasText: 'On' }).click();
+  await win.waitForFunction(() => /Digital IS ON: .*C80-2/.test(document.getElementById('toast').textContent), null, { timeout: 10000 });
+  await win.waitForFunction(() => /\(C80-2: ON\)/.test(document.querySelector('.card[data-body="C80-2"] .dis-row')?.textContent || ''), null, { timeout: 10000 });
+  await card('C80-2').locator('.dis-row button', { hasText: 'Off' }).click();
+  await win.waitForFunction(() => /Digital IS OFF/.test(document.getElementById('toast').textContent), null, { timeout: 10000 });
+  await card('C80-2').locator('.adjust-btn').click();
+  ok('Adjust: Digital IS turns on and off on every camera at once');
+
   // Record: one click starts, one click stops. Nothing asks first.
   const rec = card('C80-3').locator('.rec-btn');
   await rec.click();

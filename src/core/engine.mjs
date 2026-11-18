@@ -343,6 +343,17 @@ export function defaultsPlan(standards, info = {}) {
   ];
 }
 
+// Digital IS on or off, under the first key this camera reports it by. On is the camera's own first
+// On mode (cameras report on1, on2…): on1 when it says nothing, as read from a real C80.
+export function digitalIsPlan(standards, info, on) {
+  const keys = { ...DEFAULT_STANDARDS.mandatory, ...standards?.mandatory }.digitalIS || [];
+  const key = keys.find((k) => k in info);
+  if (!key) return [];
+  const list = (info[`${key}.list`] || '').split(',').filter(Boolean);
+  const value = on ? list.find((v) => /^on1$/i.test(v)) || list.find((v) => !/^off$/i.test(v)) || 'on1' : 'off';
+  return [{ key, name: 'Digital IS', value }];
+}
+
 // White balance as the operator typed it.
 export function wbPlan(wb) {
   return [

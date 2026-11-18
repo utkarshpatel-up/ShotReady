@@ -275,6 +275,7 @@ table.luts select { width: auto; }
 /* copy settings from another camera */
 .adjust .copy-row { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dim); }
 .adjust .copy-row select { width: auto; flex: 1; min-width: 0; }
+.adjust .dis-row { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dim); flex-wrap: wrap; }
 .copy-list tr.no td { color: var(--dim); }
 .note.warn { color: var(--yellow); border: 1px solid var(--yellow); }
 

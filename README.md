@@ -121,6 +121,15 @@ came out) the Log says so in red, and in green when the power is back. The Log a
 a camera reports for a power source other than plain DC or battery. If a C50 on USB-C still shows
 Battery, that Log line or its settings list shows the name it uses.
 
+## Digital IS on every camera
+
+Under **Copy settings from** in any camera's **Adjust**: **Digital IS · all cameras** with **On** and
+**Off**, and that camera's state beside it. One press sets Digital IS on every reachable camera, using
+the camera's own first On mode (on1 on a C80). A message names the cameras changed, any on program
+(in Mixer mode they change on air too), any that did not take it, have no Digital IS, are offline, or
+are locked in Assistant mode (live cameras are left out there). The Digital IS check stays: with it on,
+a camera's check shows red until it is turned off again.
+
 ## Copy settings from another camera
 
 At the top of **Adjust**: pick another camera under **Copy settings from**, then **Compare…**. The list

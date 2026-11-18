@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ShotReadyService } from '../src/core/service.mjs';
 import dgram from 'node:dgram';
-import { checkCamera, summarize, PROFILES, DEFAULT_STANDARDS, mandatoryChecks, oneShotAf, continuousAf, copyPlan, cameraControls, essentials, powerOf } from '../src/core/engine.mjs';
+import { checkCamera, summarize, PROFILES, DEFAULT_STANDARDS, mandatoryChecks, oneShotAf, continuousAf, copyPlan, digitalIsPlan, cameraControls, essentials, powerOf } from '../src/core/engine.mjs';
 import { findAtems, parseDns, atemsInAnswer, sweepTargets, mdnsQuery } from '../src/core/atem-discovery.mjs';
 import { decodeJpeg } from '../src/core/jpeg.mjs';
 import { parseCube, rangesFromName } from '../src/core/cube.mjs';
@@ -74,6 +74,14 @@ test('verdict: good cameras are READY, and the wrong profile makes them NOT READ
 });
 
 // 3. The mandatory settings are judged from what the camera reports.
+test('Digital IS for all cameras: the camera\'s own On mode, its own key, nothing when it has none', () => {
+  assert.deepEqual(digitalIsPlan({}, { 'c.1.eis': 'off', 'c.1.eis.list': 'off,on1,on2' }, true), [{ key: 'c.1.eis', name: 'Digital IS', value: 'on1' }]);
+  assert.deepEqual(digitalIsPlan({}, { 'c.1.eis': 'off', 'c.1.eis.list': 'off,on' }, true)[0].value, 'on');
+  assert.deepEqual(digitalIsPlan({}, { 'c.1.eis': 'on2' }, false), [{ key: 'c.1.eis', name: 'Digital IS', value: 'off' }]);
+  assert.deepEqual(digitalIsPlan({}, { 'c.1.is': 'off' }, true), [{ key: 'c.1.is', name: 'Digital IS', value: 'on1' }]);
+  assert.deepEqual(digitalIsPlan({}, { 'c.1.gamma': 'clog2_cgamut' }, true), []);
+});
+
 test('mandatory settings: the camera values decide pass or fail', () => {
   const std = { mandatory: { digitalIS: ['c.1.eis'], baseIso: ['c.1.me.baseiso'], teleConverter: ['c.1.zoom.mode'] } };
   const rows = (over) => { const info = goodCamera(over); return mandatoryChecks(info, summarize(info), std); };

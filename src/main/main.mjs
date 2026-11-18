@@ -228,6 +228,7 @@ const api = {
   setFocusFrame: (id, x, y, opts) => svc.setFocusFrame(id, x, y, { person: !!opts?.person, frame: typeof opts?.frame === 'string' ? opts.frame : undefined }),
   defaultsPreview: () => svc.defaultsPreview(),
   defaultsApply: () => svc.defaultsApply(),
+  digitalIsAll: (on) => svc.digitalIsAll(!!on),
   wbPreview: (wb) => svc.wbPreview(wb),
   wbApply: (wb) => svc.wbApply(wb),
   setBar: (on) => setBar(on),

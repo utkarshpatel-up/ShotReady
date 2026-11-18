@@ -485,6 +485,33 @@ function copyRow(c) {
   return h('div', { class: 'copy-row' }, h('span', {}, 'Copy settings from'), from, h('button', { class: 'small', onclick: () => showCopy(from.value, c.body) }, 'Compare…'));
 }
 
+// Digital IS on or off on every camera at once, from any camera's Adjust panel.
+function digitalIsRow(c) {
+  const now = c.results?.find((r) => r.check === 'Digital IS')?.detail?.match(/^(ON|OFF)/i)?.[1];
+  const set = async (e, on) => {
+    const row = e.target.closest('.dis-row');
+    for (const b of row.querySelectorAll('button')) b.disabled = true;
+    const r = await act(() => call('digitalIsAll', on));
+    for (const b of row.querySelectorAll('button')) b.disabled = false;
+    if (!r) return;
+    const done = r.results.filter((x) => x.applied.length).map((x) => x.body);
+    const failed = r.results.filter((x) => x.failed.length).map((x) => `${x.body} (${x.failed.map((f) => f.reason).join(', ')})`);
+    toast([
+      done.length ? `Digital IS ${on ? 'ON' : 'OFF'}: ${done.join(', ')}` : `Digital IS: no camera was changed`,
+      r.live.length ? `on program: ${r.live.join(', ')}` : '',
+      failed.length ? `not taken: ${failed.join('; ')}` : '',
+      r.none.length ? `no Digital IS: ${r.none.join(', ')}` : '',
+      r.offline.length ? `offline: ${r.offline.join(', ')}` : '',
+      r.locked.length ? `locked in Assistant mode: ${r.locked.join(', ')}` : '',
+    ].filter(Boolean).join(' · '), !!(failed.length || !done.length));
+    refreshLive();
+  };
+  return h('div', { class: 'dis-row', title: 'Sets Digital IS on every reachable camera. In Mixer mode a camera on program changes on air too; in Assistant mode live cameras are left out.' },
+    h('span', {}, 'Digital IS · all cameras'), now ? h('span', { class: 'empty' }, `(${c.body}: ${now})`) : null,
+    h('button', { class: 'small', onclick: (e) => set(e, true) }, 'On'),
+    h('button', { class: 'small', onclick: (e) => set(e, false) }, 'Off'));
+}
+
 async function showCopy(from, to) {
   const plan = await act(() => call('copyPreview', from, to));
   if (!plan) return;
@@ -526,7 +553,7 @@ async function showCopy(from, to) {
 
 // Dropdowns for one camera, opened with Adjust. A change goes to the camera as soon as it is picked.
 function adjustPanel(c) {
-  return h('div', { class: 'adjust' }, copyRow(c), c.controls.map((ctl) => {
+  return h('div', { class: 'adjust' }, copyRow(c), digitalIsRow(c), c.controls.map((ctl) => {
     const known = ctl.options.some((o) => o.value === ctl.value);
     return h('label', {}, ctl.name, h('select', {
       'aria-label': `${ctl.name} on ${c.body}`,

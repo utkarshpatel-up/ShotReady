@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, appendF
 import { join, basename } from 'node:path';
 import {
   PROFILES, DEFAULT_STANDARDS, OLD_DEFAULT_GAMMA, parseInfo, summarize, checkCamera, extractCopySettings, diffAgainstRef,
-  bodyIdentity, matchCameras, verdictOf, mandatoryChecks, essentials, shortLens, defaultsPlan, wbPlan, validateOnBody, cameraControls, recordState, focusDrive, focusFrame, oneShotAf, continuousAf, checkFixes, fmtVideo, copyPlan,
+  bodyIdentity, matchCameras, verdictOf, mandatoryChecks, essentials, shortLens, defaultsPlan, digitalIsPlan, wbPlan, validateOnBody, cameraControls, recordState, focusDrive, focusFrame, oneShotAf, continuousAf, checkFixes, fmtVideo, copyPlan,
 } from './engine.mjs';
 import { httpGet } from './http.mjs';
 import { CameraStream } from './stream.mjs';
@@ -1127,6 +1127,18 @@ export class ShotReadyService extends EventEmitter {
 
   defaultsApply() {
     return this.#bulkSend(this.#defaultTargets().targets, 'Default settings');
+  }
+
+  // Digital IS on or off on every reachable camera (from the Adjust panel). As with the default
+  // settings, a camera locked in Assistant mode is left out; in Mixer mode a camera on program
+  // changes too, and is named in the answer so the operator knows.
+  async digitalIsAll(on) {
+    const plan = this.#bulkTargets((info) => digitalIsPlan(this.std, info, on));
+    const none = plan.targets.filter((t) => !t.steps.length).map((t) => t.body);
+    const targets = plan.targets.filter((t) => t.steps.length);
+    const live = targets.filter((t) => this.isLive(t.body)).map((t) => t.body);
+    const results = await this.#bulkSend(targets, `Digital IS ${on ? 'on' : 'off'}`);
+    return { on, results, offline: plan.offline, locked: plan.locked, none, live };
   }
 
   #wbTargets(wb) {
