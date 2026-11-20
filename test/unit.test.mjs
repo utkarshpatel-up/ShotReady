@@ -4,7 +4,7 @@ import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ShotReadyService } from '../src/core/service.mjs';
@@ -664,7 +664,7 @@ test('phone view: the key is required, the essentials are sent live, pictures ar
 
   let view = v;
   const key = 'abcd2345';
-  const srv = new MobileServer({ dir: new URL('../src/renderer', import.meta.url).pathname, view: () => view, feedBase: async () => ({ 'C80-1': base }), key: () => key });
+  const srv = new MobileServer({ dir: fileURLToPath(new URL('../src/renderer', import.meta.url)), view: () => view, feedBase: async () => ({ 'C80-1': base }), key: () => key });
   const port = await srv.start(0);
   const url = `http://127.0.0.1:${port}/m/${key}/`;
   try {

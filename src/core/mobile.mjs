@@ -8,6 +8,7 @@
 // connection of its own to a camera.
 import { createServer, get as httpGet } from 'node:http';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { networkInterfaces } from 'node:os';
 import { randomInt } from 'node:crypto';
 import { EventEmitter } from 'node:events';
@@ -151,10 +152,10 @@ export class MobileServer extends EventEmitter {
         ...head, 'Content-Type': 'text/html; charset=utf-8',
         'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
       });
-      res.end(readFileSync(`${this.dir}/mobile.html`));
+      res.end(readFileSync(join(this.dir, 'mobile.html')));
     } else if (path === 'mobile.js') {
       res.writeHead(200, { ...head, 'Content-Type': 'text/javascript; charset=utf-8' });
-      res.end(readFileSync(`${this.dir}/mobile.js`));
+      res.end(readFileSync(join(this.dir, 'mobile.js')));
     } else if (path === 'view.json') {
       res.writeHead(200, { ...head, 'Content-Type': 'application/json' });
       res.end(JSON.stringify(this.view()));
