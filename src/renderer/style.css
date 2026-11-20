@@ -64,7 +64,7 @@ main { flex: 1; overflow: auto; padding: 12px 14px; }
 .badge.pgm { background: var(--pgm); }
 .badge.pvw { background: var(--pvw); }
 .sub-line { color: var(--dim); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.facts { display: grid; grid-template-columns: auto minmax(max-content, 1fr) auto 1fr; gap: 1px 8px; font-size: 12.5px; }
+.facts { display: grid; grid-template-columns: auto minmax(max-content, 1fr) auto 1fr; gap: 1px 6px; font-size: 12.5px; }
 .facts dt { color: var(--dim); margin: 0; }
 .facts dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rows { display: flex; flex-direction: column; gap: 3px; }

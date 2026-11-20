@@ -27,7 +27,8 @@ const when = (t) => (t ? new Date(t).toLocaleString() : '—');
 
 const SWITCHERS = { constellation: 'Constellation', '2me': '2 M/E 2RU' };
 const fmtWave = (w) => (w ? `${w.peak}% avg ${w.avg}%` : '—');
-const fmtRgb = (w) => (w && w.r !== undefined ? `R ${w.r}%  G ${w.g}%  B ${w.b}%` : '—');
+// Short, so the right-hand column of the card is not cut off: R100 G98 B95 (percent).
+const fmtRgb = (w) => (w && w.r !== undefined ? `R${w.r} G${w.g} B${w.b}` : '—');
 const fmtRuntime = (ms) => { const m = Math.floor(ms / 60000); return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`; };
 
 const app = { luts: { gammas: [], luts: {}, on: {} }, lutOn: {}, tab: 'dashboard', profile: '4K25', switcher: 'constellation', profiles: {}, bodies: [], result: null, atem: {}, busy: false, keepOpen: new Set(), feeds: {}, focus: {}, feedBase: {}, order: [], adjust: new Set(), keyMode: 'mixer', selected: null };
@@ -463,16 +464,15 @@ function paintFeed(body) {
 // Both card slots in one field. The camera only says recordable or not, so "no card" also covers
 // a full, locked or unformatted card. A slot's letter is green when it has a usable card. Red and
 // bold when neither slot can record; plain light text for the empty one when only one is empty.
+// Only the slots with a card that can record are shown, so the column stays narrow: one card is
+// "A 180 min", two are "A 180 · B 180 min". No card in either slot is red.
 function sdCards(media) {
-  const NOT = 'unrecordable';
-  const title = 'A slot shown as No SD Card cannot record: it is empty, or the card is full, locked or not formatted';
-  if (media[0].status === NOT && media[1].status === NOT) return h('dd', { class: 'sd nocard bad', title }, 'No SD Card');
-  const slot = (m, name) => {
-    if (m.status === '?') return h('span', { class: 'nocard soft' }, `${name} —`);
-    if (m.status === NOT) return h('span', { class: 'nocard soft' }, `${name} No SD Card`);
-    return h('span', {}, h('span', { class: 'slot-on' }, name), ` ${m.minutes} min`);
-  };
-  return h('dd', { class: 'sd', title }, slot(media[0], 'A'), '  ·  ', slot(media[1], 'B'));
+  const usable = media.filter((m) => m.status !== 'unrecordable' && m.status !== '?');
+  const name = (m) => (m.slot === 1 ? 'A' : 'B');
+  const title = media.map((m) => `Slot ${name(m)}: ${m.status === 'unrecordable' ? 'no card that can record (empty, full, locked or not formatted)' : m.status === '?' ? 'not reported' : `${m.minutes} min left`}`).join('\n');
+  if (!usable.length) return h('dd', { class: 'sd nocard bad', title }, 'No SD Card');
+  const parts = usable.flatMap((m, i) => [i ? ' · ' : '', h('span', { class: 'slot-on' }, name(m)), ` ${m.minutes}${i === usable.length - 1 ? ' min' : ''}`]);
+  return h('dd', { class: 'sd', title }, ...parts.filter((x) => x !== ''));
 }
 const DETECT = { off: 'OFF', ppl_catch: 'ON', ppl_only: 'People only', anml_only: 'Animals only', anml_catch: 'Animals' };
 const DETECT_TIP = { off: 'Subject detection off', ppl_catch: 'People priority', ppl_only: 'People only', anml_only: 'Animals only', anml_catch: 'Animals priority' };
@@ -787,7 +787,7 @@ function card(c) {
       h('dt', { title: 'Peak and average level, calculated from the camera preview frame' }, 'WFM'), h('dd', { 'data-wfm': c.body }, fmtWave(app.waves[c.body])),
       h('dt', {}, 'Power'), h('dd', { class: s.power?.battery ? 'on-battery' : '', title: s.power ? `The camera reports its power source as ${s.power.source}` : '' }, s.power?.text || '—'),
       h('dt', {}, 'SD Card'), sdCards(s.media),
-      h('dt', { title: 'Peak of each colour, calculated from the camera preview frame' }, 'RGB'), h('dd', { 'data-rgb': c.body }, fmtRgb(app.waves[c.body])),
+      h('dt', { title: 'Peak of each colour, calculated from the camera preview frame' }, 'RGB'), h('dd', { 'data-rgb': c.body, title: 'Peak of red, green and blue, in percent, from the camera preview frame' }, fmtRgb(app.waves[c.body])),
       // Iris on a row of its own, so the readings above keep their places.
       h('dt', { class: 'row-start' }, 'Iris'), h('dd', { title: c.essentials?.aperture ? 'The f-stop the lens is set to' : 'No lens reported, or the camera does not report its iris' }, c.essentials?.aperture || '—'),
       h('dt', { class: 'row-start', title: LEVEL_TIP }, 'Level'), h('dd', { 'data-level': c.body }, ...levelParts(c.body))) : null,
@@ -1164,6 +1164,7 @@ async function renderSettings() {
     user: text({ value: s.auth.user, autocomplete: 'off' }),
     atem: text({ value: s.atem?.ip || '', placeholder: 'Blank: found automatically' }),
     atemSearch: h('input', { type: 'checkbox', checked: s.atem?.search !== false }),
+    tallyAtem: h('input', { type: 'checkbox', checked: s.tallyFromAtem !== false }),
     poll: h('input', { type: 'number', min: 5, value: s.pollSeconds }),
     auto: h('input', { type: 'checkbox', checked: s.autoRefresh }),
     gamma: text({ value: s.standards.allowedGamma.join(', ') }),
@@ -1245,6 +1246,7 @@ async function renderSettings() {
       laptopVideo: { atemInput: laptopInput.value },
       pollSeconds: Number(f.poll.value),
       autoRefresh: f.auto.checked,
+      tallyFromAtem: f.tallyAtem.checked,
       standards: {
         allowedGamma: list(f.gamma.value), shutterSpeed: Number(f.shutter.value),
         minRecordMinutes: Number(f.minutes.value), requireTally: f.tally.checked, requireRecording: f.rec.checked,
@@ -1270,7 +1272,7 @@ async function renderSettings() {
     h('div', { class: 'section' }, h('h2', {}, 'Connections'),
       h('div', { class: 'fields' },
         field('ATEM IP address', f.atem), field('Camera user name', f.user), field('Camera password', pass),
-        field('Safety check every (seconds)', f.poll), tick('Live updates', f.auto), tick('Find the ATEM automatically', f.atemSearch)),
+        field('Safety check every (seconds)', f.poll), tick('Live updates', f.auto), tick('Find the ATEM automatically', f.atemSearch), tick('Tally lamps follow the ATEM', f.tallyAtem)),
       h('p', { class: 'hint' }, 'With the address blank, or not answering, ShotReady searches every network this computer is on, Ethernet and Wi-Fi alike, and the cameras\' networks, and connects to the ATEM it finds. It keeps searching until one answers.'),
       h('div', { class: 'toolbar' }, h('button', { onclick: searchAtem }, 'Search now')), found),
     h('div', { class: 'section' }, h('h2', {}, 'Phone view'), mobileBox.el),

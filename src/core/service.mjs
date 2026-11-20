@@ -26,6 +26,9 @@ const SWITCHERS = {
 // What the screen needs to know about a focus action: whether it can be done, and why not.
 const okWhy = (x) => (x ? { ok: x.ok, why: x.why || null, ...('continuous' in x ? { continuous: x.continuous } : {}) } : null);
 const DEFAULT_LABELS = Array.from({ length: 8 }, (_, i) => `CAM ${i + 1}`);
+// How long a tally lamp change not on the M/E 1 program or preview bus must hold before the lamp
+// follows it: two frames at 25p.
+export const TALLY_SETTLE_MS = 80;
 
 function writeJsonAtomic(path, data) {
   const tmp = `${path}.tmp`;
@@ -93,6 +96,8 @@ export class ShotReadyService extends EventEmitter {
     this.lampWant = {};
     this.lampBusy = {};
     this.lampFailed = {};
+    this.lampAt = {};         // when each lamp command went out
+    this.lampDrift = {};      // what a lamp was last found set to by something else, so it is said once
     this.focusStreams = {};
     this.focus = {};
     this.viewers = {};
@@ -280,12 +285,19 @@ export class ShotReadyService extends EventEmitter {
       const prev = this.reads[r.body.id];
       return [r.body.id, prev?.info && this.pushedAt[r.body.id] > now ? prev : r];
     }));
-    // If a lamp was changed by something else, set it again.
+    // If a lamp was changed by something else, set it again. A read that began before ShotReady's
+    // own last lamp command may still show the lamp as it was, so it is not taken as a change.
     for (const r of reads) {
-      const sent = this.lampSent[r.body.id];
-      if (!sent || !r.info) continue;
+      const id = r.body.id, sent = this.lampSent[id];
+      if (!sent || !r.info || this.cfg.tallyFromAtem === false || this.lampAt[id] >= now) continue;
       const ok = sent === 'off' ? r.info['f.tally'] === 'off' : r.info['f.tally'] === 'on' && r.info['f.tally.mode'] === sent;
-      if (!ok) delete this.lampSent[r.body.id];
+      if (ok) { delete this.lampDrift[id]; continue; }
+      const found = r.info['f.tally'] === 'on' ? `showing ${r.info['f.tally.mode'] || 'an unknown mode'}` : r.info['f.tally'] === 'off' ? 'off' : 'not reported';
+      if (this.lampDrift[id] !== found) {
+        this.lampDrift[id] = found;
+        this.log('yellow', `${id}: tally lamp found ${found} on the camera, but ShotReady had set it to ${sent}. Something else changed it: setting it again`);
+      }
+      delete this.lampSent[id];
     }
     return this.#evaluate({ report });
   }
@@ -618,26 +630,65 @@ export class ShotReadyService extends EventEmitter {
     }
   }
 
+  // The lamps follow M/E 1. A camera on the program or preview bus itself changes at once, so a cut
+  // shows straight away. Any other change (a camera on air only through a key, SuperSource or the
+  // other M/E, or a lamp going off) waits until it has held for TALLY_SETTLE_MS: the ATEM can report
+  // such a state for a moment during a cut, and lamps lit for less than two frames would flash.
   syncTally() {
     if (this.liveEnabled) this.closeOsdOnAir();
     if (!this.liveEnabled || this.cfg.tallyFromAtem === false) return;
     const atem = this.atemSummary();
     const me = atem.mixEffects?.[0];
     const tally = atem.tally || (me ? { program: [me.program], preview: [me.preview] } : null);
-    const wanted = {};
+    const wanted = {}, onBus = {};
     if (atem.connected && tally) {
       this.cfg.locations.forEach((loc) => {
         const id = this.state.assignments[loc.label]?.body;
         if (!id) return;
         const input = this.atemInputOf(loc);
-        wanted[id] = tally.program.includes(input) ? 'program' : tally.preview.includes(input) ? 'preview' : 'off';
+        const want = tally.program.includes(input) ? 'program' : tally.preview.includes(input) ? 'preview' : 'off';
+        wanted[id] = want;
+        onBus[id] = !!input && ((want === 'program' && me?.program === input) || (want === 'preview' && me?.preview === input));
       });
     }
     // Any lamp ShotReady lit but no longer controls goes out, so nothing stays red by mistake.
     for (const id of Object.keys(this.lampSent)) wanted[id] ||= 'off';
+    const list = (l) => (l?.length ? l.join('+') : 'none');
+    const source = atem.connected && tally ? `ATEM program ${list(tally.program)}, preview ${list(tally.preview)}` : 'ATEM not connected';
+    const now = Date.now();
+    const pending = this.lampPending ||= {};
+    const apply = [], brief = [];
     for (const [id, want] of Object.entries(wanted)) {
       const body = this.findBody(id);
-      if (body && this.reads[id]?.info) this.setLamp(body, want);
+      if (!body || !this.reads[id]?.info) continue;
+      const p = pending[id];
+      if (this.lampWant[id] === want) {
+        // What the lamp is already meant to show: a change that came and went before it settled was
+        // only a moment of the ATEM's state.
+        if (p) { brief.push(`${id} ${p.want}`); delete pending[id]; }
+        if (this.lampSent[id] !== want) this.setLamp(body, want); // a lamp to set again, or still being set
+        continue;
+      }
+      if (onBus[id] || (p?.want === want && now - p.at >= TALLY_SETTLE_MS)) {
+        delete pending[id];
+        apply.push([body, want]);
+      } else if (p?.want !== want) pending[id] = { want, at: now, source };
+    }
+    for (const id of Object.keys(pending)) if (!(id in wanted)) delete pending[id];
+    if (brief.length) this.log('info', `Tally: left as they were, as the ATEM showed it for less than 2 frames: ${brief.join(', ')}`);
+    if (apply.length) this.log('info', `Tally (${source}): ${apply.map(([b, want]) => `${b.id} ${want}`).join(', ')}`);
+    for (const [body, want] of apply) this.setLamp(body, want);
+    // A change still settling is looked at again once its time is up.
+    clearTimeout(this.lampTimer);
+    const next = Math.min(...Object.values(pending).map((x) => x.at + TALLY_SETTLE_MS - now));
+    if (Number.isFinite(next)) { this.lampTimer = setTimeout(() => this.syncTally(), Math.max(1, next)); this.lampTimer.unref?.(); }
+  }
+
+  // Tally lamps stop following the ATEM (Settings): the lamps ShotReady lit go out, once.
+  releaseLamps() {
+    for (const [id, sent] of Object.entries(this.lampSent)) {
+      const body = this.findBody(id);
+      if (body && sent !== 'off') this.setLamp(body, 'off');
     }
   }
 
@@ -650,6 +701,7 @@ export class ShotReadyService extends EventEmitter {
     try {
       while (this.lampSent[id] !== this.lampWant[id]) {
         const next = this.lampWant[id];
+        this.lampAt[id] = Date.now();
         await this.control(body, next === 'off' ? { 'f.tally': 'off' } : { 'f.tally': 'on', 'f.tally.mode': next });
         this.lampSent[id] = next;
         this.lampFailed[id] = false;
@@ -1563,6 +1615,9 @@ export class ShotReadyService extends EventEmitter {
     this.cfg.atem = { ip: atemIp, search: atemSearch };
     if (laptop) this.cfg.laptopVideo = { atemInput: laptop }; else delete this.cfg.laptopVideo;
     this.cfg.pollSeconds = poll;
+    const tallyWas = this.cfg.tallyFromAtem !== false;
+    if ('tallyFromAtem' in s) this.cfg.tallyFromAtem = s.tallyFromAtem !== false;
+    const tallyNow = this.cfg.tallyFromAtem !== false;
     this.cfg.standards = {
       ...this.cfg.standards, ...s.standards, shutterSpeed: shutter, minRecordMinutes: minutes,
       allowedGamma: (Array.isArray(s.standards.allowedGamma) ? s.standards.allowedGamma : String(s.standards.allowedGamma).split(',')).map((g) => g.trim()).filter(Boolean),
@@ -1584,6 +1639,8 @@ export class ShotReadyService extends EventEmitter {
     this.saveConfig();
     this.saveState();
     this.log('info', 'Settings saved');
+    if (tallyWas && !tallyNow) { this.log('info', 'Tally lamps no longer follow the ATEM: the lamps ShotReady lit are turned off'); this.releaseLamps(); }
+    if (!tallyWas && tallyNow) { this.log('info', 'Tally lamps follow the ATEM again'); this.syncTally(); }
     if (atemChanged) this.startAtem();
     this.setAutoRefresh(!!s.autoRefresh);
     return this.check({ force: true });
@@ -1732,6 +1789,7 @@ export class ShotReadyService extends EventEmitter {
   }
   stop() {
     clearInterval(this.fastTimer);
+    clearTimeout(this.lampTimer);
     clearTimeout(this.timer);
     this.timer = null;
     this.liveEnabled = false;

@@ -709,3 +709,67 @@ test('phone view: the key is required, the essentials are sent live, pictures ar
   }
   assert.equal(srv.running, false);
 });
+
+test('tally lamps: a cut lights only the cameras it involves, a moment of the ATEM never flashes a lamp, a lamp changed elsewhere is put right', async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const atem = new FakeAtemLink({ modeName: 'P4KHDp25', modeLabel: '2160p25', inputs: { 1: 'Cam-01', 2: 'Cam-02', 3: 'Cam-03' }, mixEffects: [{ program: 1, preview: 2 }], tally: { program: [1], preview: [2] } });
+  const svc = new ShotReadyService(mkdtempSync(join(tmpdir(), 'shotready-')), { defaultConfig: sim.config({ pollSeconds: 3600 }), dupDelayMs: 1, atem });
+  const logs = [];
+  svc.on('log', (e) => logs.push(e.text));
+  await svc.assignInOrder();
+  svc.liveEnabled = true; // the lamps follow the ATEM only while live; no camera threads are needed here
+  await svc.check({ force: true });
+  await sleep(150);
+  const lamp = (id) => { const i = sim.bodies[id].info; return i['f.tally'] === 'off' ? 'off' : i['f.tally.mode']; };
+  assert.deepEqual(['C80-1', 'C80-2', 'C80-3'].map(lamp), ['program', 'preview', 'off']);
+  const sent = () => Object.fromEntries(['C80-1', 'C80-2', 'C80-3'].map((id) => [id, sim.bodies[id].controls.filter((c) => 'f.tally' in c).map((c) => (c['f.tally'] === 'off' ? 'off' : c['f.tally.mode']))]));
+  for (const b of Object.values(sim.bodies)) b.controls = [];
+
+  // A cut as the ATEM reports it: program first, preview in the next packet.
+  atem.set({ mixEffects: [{ program: 2, preview: 2 }], tally: { program: [2], preview: [2] } });
+  await sleep(20);
+  atem.set({ mixEffects: [{ program: 2, preview: 1 }], tally: { program: [2], preview: [1] } });
+  await sleep(150);
+  assert.deepEqual(sent(), { 'C80-1': ['preview'], 'C80-2': ['program'], 'C80-3': [] }, 'straight from red to green, and nothing to the camera not involved');
+
+  // The ATEM shows every camera on air for a moment (a key, SuperSource or transition): no lamp moves.
+  for (const b of Object.values(sim.bodies)) b.controls = [];
+  atem.set({ mixEffects: [{ program: 2, preview: 1 }], tally: { program: [1, 2, 3], preview: [1] } });
+  await sleep(30);
+  atem.set({ mixEffects: [{ program: 2, preview: 1 }], tally: { program: [2], preview: [1] } });
+  await sleep(150);
+  assert.deepEqual(sent(), { 'C80-1': [], 'C80-2': [], 'C80-3': [] });
+  assert.ok(logs.some((t) => /less than 2 frames: C80-1 program, C80-3 program/.test(t)), logs.join('\n'));
+
+  // On air only through a key that stays: the lamp follows, two frames later.
+  atem.set({ mixEffects: [{ program: 2, preview: 1 }], tally: { program: [2, 3], preview: [1] } });
+  await sleep(30);
+  assert.equal(lamp('C80-3'), 'off', 'not yet');
+  await sleep(150);
+  assert.equal(lamp('C80-3'), 'program');
+  assert.ok(logs.some((t) => /^Tally \(ATEM program 2\+3, preview 1\): C80-3 program$/.test(t)), logs.join('\n'));
+  atem.set({ mixEffects: [{ program: 2, preview: 1 }], tally: { program: [2], preview: [1] } });
+  await sleep(150);
+  assert.equal(lamp('C80-3'), 'off');
+
+  // Something else lights C80-3: the next check says so and sets it back.
+  sim.bodies['C80-3'].info = { ...sim.bodies['C80-3'].info, 'f.tally': 'on', 'f.tally.mode': 'program' };
+  await svc.check({ force: true });
+  await sleep(150);
+  assert.equal(lamp('C80-3'), 'off');
+  assert.ok(logs.some((t) => /C80-3: tally lamp found showing program on the camera, but ShotReady had set it to off/.test(t)));
+
+  // Settings: tally lamps no longer follow the ATEM. The lit lamps go out, and cuts send nothing.
+  const settings = svc.settingsView();
+  await svc.saveSettings({ ...settings, tallyFromAtem: false });
+  await sleep(150);
+  assert.deepEqual(['C80-1', 'C80-2', 'C80-3'].map(lamp), ['off', 'off', 'off']);
+  for (const b of Object.values(sim.bodies)) b.controls = [];
+  atem.set({ mixEffects: [{ program: 3, preview: 2 }], tally: { program: [3], preview: [2] } });
+  await sleep(150);
+  assert.deepEqual(sent(), { 'C80-1': [], 'C80-2': [], 'C80-3': [] });
+  await svc.saveSettings({ ...svc.settingsView(), tallyFromAtem: true });
+  await sleep(150);
+  assert.deepEqual(['C80-1', 'C80-2', 'C80-3'].map(lamp), ['off', 'preview', 'program']);
+  svc.stop();
+});

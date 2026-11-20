@@ -94,7 +94,16 @@ factory address (192.168.10.240) needs the computer to have a 192.168.10.x addre
 With an ATEM connected, each camera's tally lamp follows the switcher: `program` when its input is
 on air on M/E 1 (including keyers and anything fed in from another M/E), `preview` when it is on
 preview, off otherwise. The label's **ATEM input** in Settings says which input is which; with none
-set, Cam-01 is input 1, and so on. Set `tallyFromAtem` to `false` in `cameras.json` to turn this off.
+set, Cam-01 is input 1, and so on. **Settings > Connections > Tally lamps follow the ATEM** turns this
+off (the lamps ShotReady lit go out) and on again.
+
+A camera on the M/E 1 program or preview bus itself changes its lamp at once, so a cut shows straight
+away. Any other change waits until it has held for 2 frames (80 ms): a camera on air only through a key,
+SuperSource or the other M/E, and a lamp going off. During a cut the ATEM can report such a state for
+a moment, and a lamp lit for less than two frames would only flash. The Log has a line for each change
+of the lamps, with what the ATEM reported (`Tally (ATEM program 2, preview 1): C80-2 program, C80-1
+preview`), one when a moment of the ATEM's state was left out, and one when a lamp was found changed by
+something other than ShotReady, which then sets it again.
 
 ## Record
 
