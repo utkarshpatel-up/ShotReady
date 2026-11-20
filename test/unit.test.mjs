@@ -626,3 +626,86 @@ test('SDI output: the cameras must match the ATEM\'s own video mode, and a setta
   assert.deepEqual(plan.steps.find((c) => c.name === 'SDI output'), { ...plan.steps.find((c) => c.name === 'SDI output'), key: 'c.1.rec.resolution', value: '1920x1080', supported: true });
   assert.equal(plan.manual.length, 0);
 });
+
+test('phone view: the key is required, the essentials are sent live, pictures are relayed at a lower rate', async () => {
+  const { MobileServer, mobileView, partSplitter, newMobileKey } = await import('../src/core/mobile.mjs');
+  const { FeedServer } = await import('../src/core/feedserver.mjs');
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  assert.match(newMobileKey(), /^[a-hjkmnp-z2-9]{8}$/);
+
+  // The essentials, from a check result.
+  const result = {
+    time: '2026-11-20T10:00:00.000Z', reds: 1, yellows: 0, profileLabel: '2160p25',
+    labels: [
+      { label: 'Cam-01', body: 'C80-1', online: true, tally: { program: [1], preview: [] }, summary: { model: 'EOS C80', lens: 'RF70-200mm F2.8 L IS USM', gamma: 'clog2_cgamut', output: '1920x1080:25000:P' },
+        essentials: { iso: '6400', isoOver: true, baseIso: 3200, shutter: '1/50', aperture: 'F2.8', wb: '5600K', digitalIS: 'OFF' },
+        results: [{ status: 'red', check: 'SDI output', detail: '1920x1080 25p but the ATEM (2160p25) needs 3840x2160 25p' }, { status: 'green', check: 'Gamma' }] },
+      { label: 'Cam-02', body: null, results: [] },
+    ],
+    spares: [{ body: 'C50-8', online: true, summary: { model: 'EOS C50', lens: 'RF28-70mm F2 L USM', output: '3840x2160:25000:P' }, essentials: {}, results: [] }, { body: 'C80-9', online: false }],
+  };
+  const v = mobileView({ result, atem: { connected: true, modeLabel: '2160p25' }, focus: { 'C80-1': { guide: true, focused: false, tiltRoll: { roll: 0.2, tilt: -1 } } }, waves: { 'C80-1': { peak: 100, avg: 30 } } });
+  assert.deepEqual(v.cams.map((c) => [c.label, c.body, c.spare]), [['Cam-01', 'C80-1', false], ['Cam-02', null, false], [null, 'C50-8', true]], 'labels, then the spares that are online');
+  const c1 = v.cams[0];
+  assert.deepEqual([c1.program, c1.preview, c1.iso, c1.isoOver, c1.baseIso, c1.iris, c1.sdi, c1.focus, c1.lens], [true, false, '6400', true, 3200, 'F2.8', '1920x1080 25p', 'out', 'RF70-200mm F2.8']);
+  assert.match(c1.sdiBad, /needs 3840x2160/);
+  assert.deepEqual([c1.reds, c1.level, c1.wfm], [['SDI output'], { roll: 0.2, tilt: -1 }, { peak: 100, avg: 30 }]);
+
+  // The splitter puts parts back together across any chunking.
+  const feed = new FeedServer();
+  const base = await feed.start();
+  const parts = [];
+  const split = partSplitter((p) => parts.push(p.toString('latin1')));
+  const jpeg = (n) => Buffer.from(`\xff\xd8frame${n}\xff\xd9`, 'latin1');
+  const one = (n) => Buffer.concat([Buffer.from(`--shotreadyframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg(n).length}\r\n\r\n`), jpeg(n), Buffer.from('\r\n')]);
+  const stream = Buffer.concat([one(1), one(2), one(3)]);
+  for (let i = 0; i < stream.length; i += 7) split(stream.subarray(i, i + 7));
+  assert.deepEqual(parts.map((p) => /frame(\d)/.exec(p)[1]), ['1', '2', '3']);
+
+  let view = v;
+  const key = 'abcd2345';
+  const srv = new MobileServer({ dir: new URL('../src/renderer', import.meta.url).pathname, view: () => view, feedBase: async () => ({ 'C80-1': base }), key: () => key });
+  const port = await srv.start(0);
+  const url = `http://127.0.0.1:${port}/m/${key}/`;
+  try {
+    assert.equal((await fetch(`http://127.0.0.1:${port}/m/wrongkey/view.json`)).status, 404, 'a wrong key gets nothing');
+    assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status, 404);
+    assert.equal((await fetch(url, { method: 'POST' })).status, 404, 'nothing but GET');
+    const page = await fetch(url);
+    assert.match(page.headers.get('content-security-policy'), /default-src 'none'/);
+    assert.match(await page.text(), /<script src="mobile\.js">/);
+    assert.equal((await (await fetch(`${url}view.json`)).json()).cams[0].label, 'Cam-01');
+    assert.ok(srv.urls().some((u) => u.url === `http://localhost:${port}/m/${key}/`));
+
+    // Live updates: the view on connecting, then each change.
+    const ac = new AbortController();
+    const es = await fetch(`${url}events`, { signal: ac.signal });
+    const reader = es.body.getReader();
+    const read = async (re) => { let t = ''; while (!re.test(t)) t += new TextDecoder().decode((await reader.read()).value); return t; };
+    assert.match(await read(/"Cam-01"/), /event: view/);
+    assert.equal(srv.viewers(), 1);
+    view = { ...v, reds: 5 };
+    srv.update();
+    assert.match(await read(/"reds":5/), /"reds":5/);
+    ac.abort();
+
+    // Pictures: relayed from the local picture stream, at no more than the rate asked for.
+    const got = [];
+    const pic = await fetch(`${url}feed/C80-1.mjpeg?fps=2`);
+    assert.match(pic.headers.get('content-type'), /multipart\/x-mixed-replace; boundary=shotreadyframe/);
+    const pr = pic.body.getReader();
+    const pump = (async () => { const sp = partSplitter((p) => got.push(/frame(\d+)/.exec(p.toString('latin1'))[1])); for (;;) { const { done, value } = await pr.read(); if (done) return; sp(Buffer.from(value)); } })().catch(() => {});
+    await sleep(100);
+    for (let n = 1; n <= 20; n++) { feed.push('C80-1', jpeg(n)); await sleep(50); } // 20 fps for a second
+    await sleep(600);
+    pr.cancel().catch(() => {});
+    await pump;
+    assert.ok(got.length >= 1 && got.length <= 4, `about 2 frames a second, not 20 (${got.length})`);
+    assert.equal(Number(got.at(-1)) >= 15, true, 'and always the latest frame');
+    assert.equal((await fetch(`${url}feed/C99-9.mjpeg`)).status, 404, 'no such camera');
+  } finally {
+    srv.stop();
+    feed.stop();
+  }
+  assert.equal(srv.running, false);
+});

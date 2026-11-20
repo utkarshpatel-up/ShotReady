@@ -13,6 +13,9 @@ mkdirSync(shots, { recursive: true });
 const data = mkdtempSync(join(tmpdir(), 'shotready-e2e-'));
 const electronPath = createRequire(import.meta.url)('electron');
 const ok = (name) => console.log(`ok - ${name}`);
+// The dashboard is rebuilt on every new check result (about every 2 s in demo mode), so a step that
+// measures or photographs a card can catch it mid-rebuild: such a step is tried again.
+const retry = async (fn, tries = 4) => { for (let i = 1; ; i++) { try { const v = await fn(); if (v !== null) return v; } catch (e) { if (i >= tries) throw e; } if (i >= tries) throw new Error('card kept being rebuilt'); await new Promise((r) => setTimeout(r, 200)); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // A test LUT that turns every pixel red, so the picture shows at a glance whether it is applied.
@@ -112,8 +115,8 @@ try {
   ok('pictures keep running while another tab is open');
 
   // Cards can be moved, and stay moved.
-  const head = await card('C80-3').locator('.name').boundingBox();
-  const target = await card('C80-1').locator('.name').boundingBox();
+  const head = await retry(() => card('C80-3').locator('.name').boundingBox());
+  const target = await retry(() => card('C80-1').locator('.name').boundingBox());
   await win.mouse.move(head.x + 5, head.y + 5);
   await win.mouse.down();
   await win.mouse.move(target.x + 20, target.y + 5, { steps: 8 });
@@ -164,7 +167,7 @@ try {
   await feed2.hover({ position: { x: size.width * 0.68, y: size.height * 0.5 } });
   await win.waitForFunction(() => document.querySelectorAll('.card[data-body="C80-2"] .fperson')[1]?.classList.contains('hover'), null, { timeout: 3000 });
   assert.equal(await card('C80-2').locator('.fperson.hover').count(), 1);
-  await card('C80-2').screenshot({ path: join(shots, '7-people.png') });
+  await retry(() => card('C80-2').screenshot({ path: join(shots, '7-people.png'), timeout: 3000 }));
   await feed2.click({ position: { x: size.width * 0.68, y: size.height * 0.5 } });
   const centre = () => box('C80-2').evaluate((b) => [parseFloat(b.style.left) + parseFloat(b.style.width) / 2, parseFloat(b.style.top) + parseFloat(b.style.height) / 2]);
   await win.waitForFunction(() => { const b = document.querySelector('.card[data-body="C80-2"] .fbox'); return Math.abs(parseFloat(b.style.left) + parseFloat(b.style.width) / 2 - 70) < 1; }, null, { timeout: 5000 });
@@ -270,8 +273,10 @@ try {
   ok('card: the electronic level, with a green dot when level, and the iris');
 
   // A camera on program and preview at once: the label dropdown keeps its width, the tags stack.
-  await win.evaluate(() => { document.querySelector('.card[data-body="C80-5"] .tally-tags').innerHTML = '<span class="badge pgm">PROGRAM M/E 2</span><span class="badge pvw">PREVIEW</span>'; });
-  const sel = await card('C80-5').locator('.card-head select').boundingBox();
+  const sel = await retry(async () => {
+    await win.evaluate(() => { document.querySelector('.card[data-body="C80-5"] .tally-tags').innerHTML = '<span class="badge pgm">PROGRAM M/E 2</span><span class="badge pvw">PREVIEW</span>'; });
+    return card('C80-5').locator('.card-head select').boundingBox({ timeout: 1000 });
+  });
   assert.ok(sel.width >= 112, `the dropdown keeps its width (${sel.width})`);
   ok('card header: program and preview tags together do not squash the label dropdown');
 
@@ -466,6 +471,36 @@ try {
   assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('bar.html')).isAlwaysOnTop()), true);
   await bar.screenshot({ path: join(shots, '3-bar.png') });
   ok('bar: open and always on top');
+
+  // 6. Phone view: turned on in Settings, a QR code and link per network, and the page on a phone.
+  await tab('Settings');
+  const phoneSection = win.locator('.section', { has: win.locator('h2', { hasText: /^Phone view$/ }) });
+  await phoneSection.locator('input[aria-label="Phone view port"]').fill('18781');
+  await phoneSection.locator('button', { hasText: 'Turn phone view on' }).click();
+  await win.waitForSelector('.phone-url img[src^="data:image/gif"]', { timeout: 5000 });
+  const phoneUrl = (await phoneSection.locator('.mono').last().textContent()).trim();
+  assert.match(phoneUrl, /^http:\/\/localhost:18781\/m\/[a-z0-9]{8}\/$/);
+  assert.equal((await fetch(phoneUrl.replace(/\/m\/[a-z0-9]+\//, '/m/nottheky/'))).status, 404, 'no key, nothing');
+  await app.evaluate(({ BrowserWindow }, u) => new BrowserWindow({ width: 390, height: 844, title: 'phone' }).loadURL(u), phoneUrl);
+  const phone = await pageOf(phoneUrl.slice(-12));
+  await phone.setViewportSize({ width: 390, height: 844 });
+  await phone.waitForFunction(() => document.getElementById('live').textContent === 'Live', null, { timeout: 10000 });
+  await phone.locator('#show button', { hasText: 'All' }).click(); // the phone keeps its last choice
+  await phone.waitForFunction(() => document.querySelectorAll('.card').length >= 8, null, { timeout: 10000 });
+  assert.match(await phone.locator('.card').first().textContent(), /Cam-01\s*C80-1.*ISO\s*\d+.*Base\s*3200.*Iris\s*F2\.8/);
+  await phone.waitForFunction(() => document.querySelector('.card .pic img')?.naturalWidth > 1, null, { timeout: 10000 });
+  await phone.screenshot({ path: join(shots, '11-phone.png') });
+  await win.waitForFunction(() => /1 phone watching/.test(document.querySelector('.phone-urls')?.closest('.section')?.textContent || ''), null, { timeout: 5000 });
+  await phone.locator('#show button', { hasText: 'On air' }).click();
+  await phone.waitForFunction(() => [...document.querySelectorAll('.card')].every((c) => c.querySelector('.tag.pgm, .tag.pvw')), null, { timeout: 5000 });
+  await phone.locator('.card .pic').first().click();
+  await phone.waitForFunction(() => !document.getElementById('big').hidden && document.getElementById('big-img').naturalWidth > 1, null, { timeout: 10000 });
+  await phone.locator('#big-close').click();
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.getTitle() === 'phone' || w.webContents.getURL().includes('/m/'))?.close());
+  await phoneSection.locator('button', { hasText: 'Phone view on' }).click();
+  await win.waitForSelector('text=Turn phone view on', { timeout: 5000 });
+  await assert.rejects(fetch(phoneUrl), 'off means off');
+  ok('phone view: on from Settings, key required, the cameras live on a phone, On air and the large view, and off again');
 
   assert.deepEqual(errors, []);
   ok('no errors in the window console');

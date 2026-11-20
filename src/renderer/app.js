@@ -1123,9 +1123,41 @@ async function renderLog() {
 }
 
 // ---------- settings ----------
+// ---------- phone view ----------
+// A read-only page of the pictures and essentials for a phone on the same network. It acts at once,
+// apart from the Save button below it.
+const mobileBox = { el: null };
+function paintMobile(st) {
+  const box = mobileBox.el;
+  if (!box || !box.isConnected || !st) return;
+  const port = h('input', { type: 'number', min: 1024, max: 65535, value: st.port, 'aria-label': 'Phone view port', class: 'port' });
+  const set = async (on) => { const r = await act(() => call('mobileSet', { on, port: Number(port.value) })); if (r) paintMobile(r); };
+  const lan = st.urls.filter((u) => u.qr);
+  const local = st.urls.find((u) => !u.qr);
+  const copy = (url) => navigator.clipboard.writeText(url).then(() => toast('Link copied'), () => toast(url));
+  box.replaceChildren(...[
+    h('div', { class: 'vo-row' },
+      h('button', { class: st.running ? 'on-btn' : 'primary', onclick: () => set(!st.running) }, st.running ? 'Phone view on' : 'Turn phone view on'),
+      h('label', {}, 'Port ', port),
+      st.running ? h('button', { class: 'small', onclick: () => set(true) }, 'Use this port') : null,
+      st.running ? h('span', { class: 'tag-ok' }, st.viewers ? `${st.viewers} phone${st.viewers === 1 ? '' : 's'} watching` : 'No phone watching') : h('span', { class: 'empty' }, 'Off')),
+    st.error ? h('p', { class: 'err' }, `Could not start: ${st.error}`) : null,
+    st.running && !lan.length ? h('p', { class: 'warn-text' }, 'This computer is on no network a phone could reach. Connect it to the Wi-Fi or network the phone is on.') : null,
+    st.running ? h('div', { class: 'phone-urls' }, lan.map((u) => h('div', { class: 'phone-url' },
+      h('img', { src: u.qr, alt: `QR code for ${u.url}`, width: 132, height: 132 }),
+      h('div', {}, h('div', { class: 'empty' }, u.name), h('div', { class: 'mono sel' }, u.url),
+        h('button', { class: 'small', onclick: () => copy(u.url) }, 'Copy link'))))) : null,
+    st.running && local ? h('p', { class: 'hint' }, 'On this computer: ', h('span', { class: 'mono sel' }, local.url)) : null,
+    st.running ? h('div', { class: 'vo-row' }, h('button', { class: 'small', title: 'Phones with the old link stop working and need the new one', onclick: async () => { const r = await act(() => call('mobileNewKey')); if (r) { paintMobile(r); toast('New link made: phones need the new one'); } } }, 'New link')) : null,
+    h('p', { class: 'hint' }, 'Scan the code with the phone\'s camera, or type the link into its browser. The phone must be on the same network as this computer (the same Wi-Fi, or Tailscale or ZeroTier). It shows each camera\'s picture, tally and essentials, live, and can change nothing. The link carries a key: anyone with it can watch, so make a new link to cut off old ones. The first time, Windows may ask whether ShotReady may use the network: allow it on private networks. Each phone adds the pictures it shows to this computer\'s work; Data saver on the phone sends fewer frames.'),
+  ].filter(Boolean));
+}
+
 async function renderSettings() {
   const s = await act(() => call('settings'));
   if (!s || app.tab !== 'settings') return;
+  mobileBox.el = h('div');
+  const phone = act(() => call('mobileStatus'));
   const text = (props) => h('input', { type: 'text', ...props });
   const pass = h('input', { type: 'password', placeholder: s.auth.hasPass ? 'Saved. Leave blank to keep it' : '', autocomplete: 'off' });
   const f = {
@@ -1241,6 +1273,7 @@ async function renderSettings() {
         field('Safety check every (seconds)', f.poll), tick('Live updates', f.auto), tick('Find the ATEM automatically', f.atemSearch)),
       h('p', { class: 'hint' }, 'With the address blank, or not answering, ShotReady searches every network this computer is on, Ethernet and Wi-Fi alike, and the cameras\' networks, and connects to the ATEM it finds. It keeps searching until one answers.'),
       h('div', { class: 'toolbar' }, h('button', { onclick: searchAtem }, 'Search now')), found),
+    h('div', { class: 'section' }, h('h2', {}, 'Phone view'), mobileBox.el),
     h('div', { class: 'section' }, h('h2', {}, 'Monitoring LUTs'),
       h('p', { class: 'hint' }, 'A LUT for each Log gamma, shown over the pictures in ShotReady only: nothing is sent to the cameras, and the waveform still reads the Log picture. Turn it on for a camera with the LUT button on its card; each camera uses the LUT for the gamma it is set to. The graphics card applies it to every frame.'),
       h('table', { class: 'luts' },
@@ -1259,6 +1292,7 @@ async function renderSettings() {
     h('div', { class: 'save-bar' },
       h('button', { class: 'primary', onclick: save, id: 'save-settings' }, 'Save'), msg,
       h('button', { onclick: () => call('openDataFolder') }, 'Open data folder'))));
+  paintMobile(await phone);
 }
 
 // ---------- video out ----------
@@ -1723,6 +1757,7 @@ async function start() {
   });
   document.addEventListener('visibilitychange', syncFeeds);
   api.on('atem', (a) => { app.atem = a; refreshLive(); });
+  api.on('mobile', (s) => paintMobile(s));
   api.on('playout', (s) => {
     app.playout = s;
     if (app.tab !== 'videoout') return;

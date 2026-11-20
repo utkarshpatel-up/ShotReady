@@ -38,6 +38,7 @@ The installed app shows demo mode when started with `ShotReady.exe --demo`.
 | Screen | What it is for |
 | --- | --- |
 | Dashboard | ATEM status (CONNECTED in green), camera checks summary, a card per body with its label, PGM/PVW |
+| Phone view | The cameras' pictures, tally and essentials on a phone or tablet on the same network, read-only |
 | Video out | Plays a video to the HDMI display through your inverse LUT, audio to the audio jack, or sends a screen live through any LUT |
 | Stream | Streams the program live to YouTube, a Zoom webinar or event, or any RTMP server |
 | Bar | Always-on-top strip with WB, ISO, shutter, aperture, digital IS and waveform per camera. Drag to move, drag an edge to resize, toggle with the **Bar** button |
@@ -171,6 +172,27 @@ anywhere) moves the focus guide there without any autofocus.
 
 On a camera that is on program a click never focuses: the box moves, and focus waits for **1-Shot AF**.
 With Continuous AF on, a click only moves the box: the camera follows it by itself.
+
+## Phone view
+
+A read-only page of the cameras for a phone or tablet: each camera's picture, its tally (PGM / PVW),
+and its essentials (ISO and Base ISO, shutter, iris, white balance, SDI, focus, level, waveform and its
+check results), live. It changes nothing on a camera or the switcher.
+
+1. **Settings > Phone view > Turn phone view on.** The port is 8780 unless you change it.
+2. Scan the QR code with the phone's camera, or type the link into its browser. There is one link per
+   network this computer is on (Ethernet, Wi-Fi, Tailscale, ZeroTier); the phone must be on the same one.
+   On the computer itself, the `localhost` link works.
+3. The first time, Windows may ask whether ShotReady may use the network: allow it on private networks.
+
+On the phone: **All** or **On air** (only the cameras on program or preview), and **Smooth** (10 frames a
+second), **Data saver** (3) or **No pictures**. Tap a picture for that camera large; swipe or ‹ › for the
+next, ✕ or Back to close. Pictures run only for cameras on screen and stop while the page is in the
+background. The phone gets the pictures from this computer, never from the cameras.
+
+The link carries a key, kept between runs: anyone with the link can watch. **New link** makes a new key,
+and phones with the old link stop working. **Phone view on** turns it off. Settings shows how many
+phones are watching.
 
 ## Level
 

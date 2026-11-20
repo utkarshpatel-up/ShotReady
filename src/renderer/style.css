@@ -91,6 +91,7 @@ th { text-align: left; color: var(--dim); font-weight: 600; border-bottom: 1px s
 td { border-bottom: 1px solid #292d34; padding: 5px 9px; vertical-align: top; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.mono { font-family: Consolas, monospace; font-size: 12.5px; }
+.mono { font-family: Consolas, monospace; }
 .on-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--dim); }
 .on-dot.on { background: var(--green); }
 .on-dot.off { background: var(--red); }
@@ -316,3 +317,11 @@ button.st-go { font-size: 14px; padding: 8px 18px; font-weight: 600; }
 .vo-queue tr.cued td { background: var(--panel-2); }
 .vo-queue .q-actions { white-space: nowrap; text-align: right; }
 .vo-queue .q-actions button { margin-left: 4px; }
+
+/* Settings > Phone view: a QR code and the link for each network this computer is on. */
+.phone-urls { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0; }
+.phone-url { display: flex; gap: 12px; align-items: center; background: var(--panel-2); border-radius: 6px; padding: 10px; }
+.phone-url img { background: #fff; border-radius: 4px; image-rendering: pixelated; }
+.phone-url > div { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.sel { user-select: text; }
+input.port { width: 90px; }

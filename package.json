@@ -46,7 +46,8 @@
     }
   },
   "dependencies": {
-    "atem-connection": "3.10.3"
+    "atem-connection": "3.10.3",
+    "qrcode-generator": "1.4.4"
   },
   "devDependencies": {
     "electron": "45.2.3",

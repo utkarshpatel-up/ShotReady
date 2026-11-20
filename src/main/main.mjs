@@ -7,6 +7,8 @@ import { checkForUpdate, applyUpdate, repoOf } from './updater.mjs';
 import { Playout } from './playout.mjs';
 import { Preprocessor } from './preprocess.mjs';
 import { Streamer } from './stream.mjs';
+import { createRequire } from 'node:module';
+import { MobileServer, mobileView, newMobileKey, MOBILE_DEFAULT_PORT } from '../core/mobile.mjs';
 import { ShotReadyService } from '../core/service.mjs';
 import { AtemLink, FakeAtemLink } from '../core/atem.mjs';
 import { PROFILES } from '../core/engine.mjs';
@@ -17,7 +19,9 @@ const isDemo = process.argv.includes('--demo');
 // Lets the end-to-end test run against a throwaway data folder.
 const dataOverride = process.argv.find((a) => a.startsWith('--data-dir='))?.slice('--data-dir='.length);
 
-let win, bar, svc, sim, playout, preprocessor, streamer;
+let win, bar, svc, sim, playout, preprocessor, streamer, mobile;
+let mobileError = null;
+const qrcode = createRequire(import.meta.url)('qrcode-generator');
 
 const encrypt = (s) => {
   if (!safeStorage.isEncryptionAvailable()) throw new Error('Windows could not protect the password, so it was not saved');
@@ -173,6 +177,19 @@ async function startService() {
   streamer.on('note', (text) => svc.log('yellow', text));
   streamer.on('info', (text) => svc.log('info', text));
   streamer.on('alarm', (text) => svc.log('red', text));
+  // Phone view: a read-only page of the pictures and essentials for phones on the same network.
+  // Off until turned on in Settings; its address carries a key that stays the same between runs.
+  svc.state.mobile = { on: false, port: MOBILE_DEFAULT_PORT, ...svc.state.mobile };
+  if (!svc.state.mobile.key) { svc.state.mobile.key = newMobileKey(); svc.saveStateSoon(); }
+  mobile = new MobileServer({
+    dir: join(here, '../renderer'),
+    view: () => mobileView({ result: svc.lastResult, atem: svc.atemSummary(), focus: svc.focus, waves: svc.waves }),
+    feedBase: () => svc.feedBase(),
+    key: () => svc.state.mobile.key,
+  });
+  for (const ev of ['result', 'atem', 'focus', 'wave']) svc.on(ev, () => mobile.update());
+  mobile.on('viewers', () => send('mobile', mobileStatus()));
+  if (svc.state.mobile.on) startMobile().catch(() => {});
   svc.startLive();
   // Demo only: someone keeps adjusting C80-2's white balance, and C80-1 keeps drifting out of
   // focus and back, so live updates can be seen.
@@ -185,6 +202,33 @@ async function startService() {
       sim.bodies['C80-1'].setFocus(soft ? { ...DEMO_FOCUS[0], level: 0, angle: 30 } : DEMO_FOCUS[0]);
     }, 4000).unref();
   }
+}
+
+// ---------- phone view ----------
+async function startMobile() {
+  mobileError = null;
+  try {
+    await mobile.start(svc.state.mobile.port);
+    svc.log('info', `Phone view on: ${mobile.urls().map((u) => u.url).join('  ')}`);
+  } catch (e) {
+    mobileError = e.message;
+    svc.log('red', `Phone view could not start: ${e.message}`);
+    throw e;
+  }
+}
+
+// What Settings shows: on or off, the addresses with a QR code each, and how many phones watch.
+function mobileStatus() {
+  const qr = (text) => {
+    const q = qrcode(0, 'M');
+    q.addData(text);
+    q.make();
+    return q.createDataURL(4, 2);
+  };
+  return {
+    on: !!svc.state.mobile.on, running: mobile.running, port: svc.state.mobile.port, error: mobileError,
+    urls: mobile.urls().map((u) => ({ ...u, qr: u.name === 'this computer' ? null : qr(u.url) })), viewers: mobile.viewers(),
+  };
 }
 
 // The renderer can reach only what is listed here.
@@ -324,6 +368,26 @@ const api = {
   },
   screenLutClear: () => { svc.clearScreenLut(); return playout.command('lutChanged'); },
   screenLutRange: (input, output) => { svc.setScreenLutRange(input, output); return playout.command('lutChanged'); },
+  mobileStatus: () => mobileStatus(),
+  mobileSet: async (o) => {
+    const port = Number(o?.port ?? svc.state.mobile.port);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('The port must be a whole number from 1024 to 65535');
+    svc.state.mobile = { ...svc.state.mobile, on: !!o?.on, port };
+    svc.saveStateSoon();
+    mobile.stop();
+    if (svc.state.mobile.on) {
+      try { await startMobile(); } catch (e) { svc.state.mobile.on = false; svc.saveStateSoon(); throw e; }
+    } else { mobileError = null; svc.log('info', 'Phone view off'); }
+    return mobileStatus();
+  },
+  // A new key: every phone with the old link is cut off and needs the new one.
+  mobileNewKey: async () => {
+    svc.state.mobile.key = newMobileKey();
+    svc.saveStateSoon();
+    if (mobile.running) { mobile.stop(); await startMobile(); }
+    svc.log('info', 'Phone view: new link made; the old one no longer works');
+    return mobileStatus();
+  },
   // From the output window.
   playoutReady: () => { playout.restore(); return true; },
   playoutReport: (state) => { playout.report(state || {}); return true; },
@@ -428,7 +492,7 @@ function createWindow() {
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.loadFile(join(here, '../renderer/index.html'));
   // The bar and video out are extra views of the main window: closing the main window ends the app.
-  win.on('closed', () => { if (bar) bar.close(); playout?.stop(); preprocessor?.stop(); streamer?.close(); });
+  win.on('closed', () => { if (bar) bar.close(); playout?.stop(); preprocessor?.stop(); streamer?.close(); mobile?.stop(); });
 }
 
 if (!app.requestSingleInstanceLock() && !dataOverride) {
@@ -449,5 +513,5 @@ if (!app.requestSingleInstanceLock() && !dataOverride) {
     logGraphics();
   });
   app.on('window-all-closed', () => app.quit());
-  app.on('before-quit', () => { streamer?.close(); preprocessor?.stop(); playout?.stop(); svc?.stop(); svc?.atem?.disconnect(); sim?.close(); });
+  app.on('before-quit', () => { mobile?.stop(); streamer?.close(); preprocessor?.stop(); playout?.stop(); svc?.stop(); svc?.atem?.disconnect(); sim?.close(); });
 }
