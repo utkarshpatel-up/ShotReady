@@ -55,10 +55,11 @@ parentPort.on('message', async (m) => {
   if (m.type === 'connect') {
     await close();
     open(m.id, m.ip);
-  } else if (m.type === 'program') {
+  } else if (m.type === 'program' || m.type === 'preview') {
     const reply = (error) => post({ type: 'done', id: m.id, req: m.req, error });
     if (current?.id !== m.id) { reply('the ATEM is not connected'); return; }
-    current.atem.changeProgramInput(m.input, m.me).then(() => reply(null), (e) => reply(e.message));
+    const send = m.type === 'program' ? current.atem.changeProgramInput(m.input, m.me) : current.atem.changePreviewInput(m.input, m.me);
+    send.then(() => reply(null), (e) => reply(e.message));
   } else if (m.type === 'close') {
     if (current?.id === m.id) await close();
   } else if (m.type === 'stop') {

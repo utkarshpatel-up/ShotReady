@@ -88,6 +88,23 @@ export function summarize(info) {
   };
 }
 
+// The camera's electronic level: roll (the horizon's slope) and tilt (pointing up or down), in
+// degrees, wherever the camera reports them: a setting or metadata field named roll, and one named
+// tilt or pitch, at any depth. The key names Canon uses are not known yet (a C80 on 1.0.6.1 has none
+// among its settings), so this finds them by name instead of guessing one. Null when there are none.
+export function levelIn(src, depth = 0) {
+  if (!src || typeof src !== 'object' || Array.isArray(src) || depth > 3) return null;
+  const num = (v) => (v === '' || v === null || v === undefined || typeof v === 'object' ? NaN : Number(v));
+  const pick = (re) => {
+    const hit = Object.entries(src).find(([k, v]) => re.test(k.split('.').pop()) && Number.isFinite(num(v)));
+    return hit ? Math.round(num(hit[1]) * 10) / 10 : null;
+  };
+  const roll = pick(/^roll$/i), tilt = pick(/^(tilt|pitch)$/i);
+  if (roll !== null || tilt !== null) return { roll, tilt };
+  for (const v of Object.values(src)) { const got = levelIn(v, depth + 1); if (got) return got; }
+  return null;
+}
+
 export const fmtVideo = (v) => {
   if (!v) return '(none)';
   const [res, rate, scan] = v.split(':');
@@ -223,6 +240,7 @@ export function essentials(info, s, std) {
     shutterBad: s.shutterMode !== 'speed' || Number(s.shutter) !== Number({ ...DEFAULT_STANDARDS, ...std }.shutterSpeed),
     aperture: !raw ? null : n >= 100 ? `F${n / 100}` : n > 0 ? `F${n}` : raw,
     digitalIS: pick('digitalIS'),
+    level: levelIn(info),
   };
 }
 

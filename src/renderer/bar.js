@@ -47,6 +47,7 @@ function cell(l) {
   vals.append(
     value('wb', 'WB', e.wb),
     value('iso', 'ISO', e.iso, e.isoOver),
+    value('baseIso', 'Base', e.baseIso),
     value('shutter', 'Shutter', e.shutter, e.shutterBad),
     value('aperture', 'Iris', e.aperture),
     value('digitalIS', 'Dig IS', e.digitalIS, isOn(e.digitalIS)),

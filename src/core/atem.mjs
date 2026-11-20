@@ -59,10 +59,15 @@ export class AtemLink extends EventEmitter {
   // Cuts a wait short, so a search runs now.
   searchNow() { this.wake?.(); }
 
-  // A cut to program on an M/E (F1 / F2). The only command ShotReady sends a switcher.
+  // A cut to program (Shift+F1 / F2) or a change of preview (F1 / F2) on an M/E. The only commands
+  // ShotReady sends a switcher.
   async changeProgram(input, me = 0) {
     if (!this.status.connected || !this.atem) throw new Error('The ATEM is not connected');
     await this.atem.changeProgramInput(input, me);
+  }
+  async changePreview(input, me = 0) {
+    if (!this.status.connected || !this.atem) throw new Error('The ATEM is not connected');
+    await this.atem.changePreviewInput(input, me);
   }
 
   async loop(run) {
@@ -237,6 +242,10 @@ export class FakeAtemLink extends EventEmitter {
   searchNow() {}
   async changeProgram(input, me = 0) {
     const mixEffects = (this.data.mixEffects || []).map((m, i) => (i === me ? { ...m, program: input } : m));
+    this.set({ mixEffects, tally: undefined });
+  }
+  async changePreview(input, me = 0) {
+    const mixEffects = (this.data.mixEffects || []).map((m, i) => (i === me ? { ...m, preview: input } : m));
     this.set({ mixEffects, tally: undefined });
   }
   find() { return Promise.resolve({ networks: [], found: [{ ip: 'simulated', name: this.data.name, via: 'demo', network: '' }] }); }

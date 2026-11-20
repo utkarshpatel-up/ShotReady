@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ShotReadyService } from '../src/core/service.mjs';
 import dgram from 'node:dgram';
-import { checkCamera, summarize, PROFILES, DEFAULT_STANDARDS, mandatoryChecks, oneShotAf, continuousAf, copyPlan, digitalIsPlan, cameraControls, atemVideoFormat, resolutionControl, resolutionFor, essentials, powerOf } from '../src/core/engine.mjs';
+import { checkCamera, summarize, PROFILES, DEFAULT_STANDARDS, mandatoryChecks, oneShotAf, continuousAf, copyPlan, digitalIsPlan, cameraControls, atemVideoFormat, resolutionControl, resolutionFor, levelIn, essentials, powerOf } from '../src/core/engine.mjs';
 import { findAtems, parseDns, atemsInAnswer, sweepTargets, mdnsQuery } from '../src/core/atem-discovery.mjs';
 import { decodeJpeg } from '../src/core/jpeg.mjs';
 import { parseCube, rangesFromName } from '../src/core/cube.mjs';
@@ -416,10 +416,14 @@ test('keys: F1 cut in Mixer mode only, A and D step Kelvin, the laptop input has
   const atem = new FakeAtemLink({ modeName: 'P4KHDp25', modeLabel: '2160p25', inputs: { 1: 'Cam-01', 2: 'Cam-02', 3: 'Cam-03', 3010: 'Media Player 1', 3020: 'Media Player 2' }, mixEffects: [{ program: 1, preview: 2 }] });
   const svc = new ShotReadyService(mkdtempSync(join(tmpdir(), 'shotready-')), { defaultConfig: sim.config({ pollSeconds: 3600 }), dupDelayMs: 1, atem });
   await svc.assignInOrder();
-  assert.deepEqual(await svc.cutMediaPlayer(1), { input: 3010, name: 'Media Player 1' });
+  // F1: on preview only, program untouched. Shift+F1: cut to program.
+  assert.deepEqual(await svc.cutMediaPlayer(1), { input: 3010, name: 'Media Player 1', to: 'preview' });
+  assert.deepEqual([atem.data.mixEffects[0].program, atem.data.mixEffects[0].preview], [1, 3010]);
+  assert.deepEqual(await svc.cutMediaPlayer(1, 'program'), { input: 3010, name: 'Media Player 1', to: 'program' });
   assert.equal(atem.data.mixEffects[0].program, 3010);
   svc.setKeyMode('assistant');
-  await assert.rejects(svc.cutMediaPlayer(2), /only in Mixer mode/);
+  await assert.rejects(svc.cutMediaPlayer(2), /F2 works only in Mixer mode/);
+  await assert.rejects(svc.cutMediaPlayer(2, 'program'), /Shift\+F2 works only in Mixer mode/);
   assert.equal(atem.data.mixEffects[0].program, 3010, 'nothing was changed');
 
   // Kelvin: one step up the camera's own list.
@@ -466,6 +470,19 @@ test('copy settings, ISO above Base ISO, saturation and the settings list', asyn
 
   const path = await svc.saveSettingsList('C80-1');
   assert.match(readFileSync(path, 'utf8'), /c\.1\.gamma=clog2_cgamut/);
+  assert.match(readFileSync(path, 'utf8'), /# metadata \(meta\.cgi, one sample\)\r\n[^#]*version=3\.0\.0/, 'a metadata sample is saved too');
+});
+
+test('electronic level: roll and tilt found by name, in settings or metadata, never a focus level', () => {
+  assert.deepEqual(levelIn({ elevel: { roll: 0.24, tilt: -1.36 } }), { roll: 0.2, tilt: -1.4 });
+  assert.deepEqual(levelIn({ 'c.1.gyro.roll': '3.05', 'c.1.gyro.pitch': '-0.5', 'c.1.blacklevel': '0' }), { roll: 3.1, tilt: -0.5 });
+  assert.deepEqual(levelIn({ a: { b: { roll: 1 } } }), { roll: 1, tilt: null });
+  assert.equal(levelIn({ 'c.1.blacklevel': '0', 'c.1.gamma': 'clog2_cgamut' }), null);
+  assert.equal(levelIn({ roll: '' }), null);
+  const g = { status: 1, level: 2, pos: { x: 5000, y: 5000, w: 1000, h: 1000 } };
+  assert.equal(normalizeFocus({ fguide: [g] }).tiltRoll, null, 'the focus guide\'s level is not a tilt');
+  assert.deepEqual(normalizeFocus({ fguide: [g], elevel: { roll: 0, tilt: 2 } }).tiltRoll, { roll: 0, tilt: 2 });
+  assert.deepEqual(normalizeFocus({ elevel: { roll: 0, tilt: 2 } }).tiltRoll, { roll: 0, tilt: 2 }, 'also with no focus guide');
 });
 
 // 17. Pre-processing's MP4 files: what is written reads back the same, the sound's description is kept

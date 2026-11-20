@@ -215,9 +215,11 @@ button.rec-btn.live, button.rec-btn.live:hover:not(:disabled) { background: var(
 /* camera cards: a plain white outline, no verdict colour on top. The checks chip on the card still
    shows reds and yellows. Program and preview are named in the centre of the header. */
 .card, .card.red, .card.yellow, .card.green { border: 1px solid #e9ebef; }
-.card-head { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
-.card-head select { justify-self: end; min-width: 0; max-width: min(170px, 100%); } /* shrinks beside a long tally tag, never past the card */
-.tally-tags { display: flex; gap: 6px; justify-content: center; }
+/* Name, tally tags in the middle, label dropdown. The dropdown keeps a readable width; when two tags
+   (program and preview) do not fit side by side they stack in the middle instead of squeezing it. */
+.card-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; }
+.card-head select { justify-self: end; min-width: 112px; max-width: 170px; }
+.tally-tags { display: flex; flex-wrap: wrap; gap: 4px 6px; justify-content: center; min-width: 0; }
 .tally-tags .badge { font-size: 13px; font-weight: 800; letter-spacing: .06em; padding: 2px 10px; }
 
 /* camera on-screen display is on: said over the picture */
@@ -268,6 +270,11 @@ table.luts select { width: auto; }
 
 /* ISO above the camera's Base ISO */
 .facts .iso-over { color: var(--red); font-weight: 700; }
+.facts .sdi-bad { color: var(--red); font-weight: 700; }
+.facts .lvl { white-space: nowrap; }
+.facts dd[data-level] { grid-column: 2 / -1; }
+.facts dt.row-start { grid-column: 1; }
+.facts .lvl-ok { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); margin-right: 4px; vertical-align: 1px; }
 .laptop-row { display: flex; align-items: center; gap: 10px; margin: 10px 0; flex-wrap: wrap; }
 .laptop-row input { width: 90px; }
 .laptop-row .hint { margin: 0; }

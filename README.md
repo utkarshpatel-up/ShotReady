@@ -5,7 +5,8 @@ Blackmagic ATEM 2 M/E switchers. It sits beside Canon's RCCA: RCCA stays the ope
 control surface, ShotReady confirms everything is right before mixing starts.
 
 ShotReady reads from the ATEM, and finds it by itself on Ethernet or Wi-Fi. The one thing it changes
-on the switcher is a cut of Media Player 1 or 2 to program, when you press **F1** or **F2**. It writes to
+on the switcher is Media Player 1 or 2: on preview when you press **F1** or **F2**, cut to program with
+**Shift+F1** or **Shift+F2**. It writes to
 cameras only for tally lamps and when you ask it to, with **Adjust** or **Copy settings** on a camera's
 card, the keyboard, or the all-camera buttons on the Checks tab.
 
@@ -171,6 +172,15 @@ anywhere) moves the focus guide there without any autofocus.
 On a camera that is on program a click never focuses: the box moves, and focus waits for **1-Shot AF**.
 With Continuous AF on, a click only moves the box: the camera follows it by itself.
 
+## Level
+
+Under each camera's picture, **Level** shows the camera's electronic level: **Roll** (the horizon's
+slope) and **Tilt** (pointing up or down), in degrees, live. An axis within 0.5° of level gets a small
+green dot, like the camera's bubble turning green; otherwise it is plain text. A camera that does not
+report its level shows —. Canon's names for these readings are not known yet: ShotReady looks for any
+setting or metadata field named roll, tilt or pitch. **Save settings list** (Bodies tab) now also saves a
+sample of the camera's metadata, so the file shows whether and where a camera reports its level.
+
 ## Keyboard
 
 With the ShotReady window in front, **W** raises and **S** lowers ISO by one step, and **D** raises and
@@ -180,10 +190,14 @@ the window:
 - **Mixer**: the camera the switcher has on preview (M/E 1 first). A camera also on program is left alone.
 - **Assistant**: the camera last clicked on, which gets a blue outline. A camera on program cannot be
   selected or changed in this mode, and nothing can be changed while the ATEM is disconnected.
+  The **number pad** picks the camera without the mouse: **1** selects the camera on the first label
+  (Cam-01), **2** the second, and so on up to 9, with Num Lock on or off. A camera on program is not
+  selected, as with a click.
 
-**F1** cuts Media Player 1, and **F2** Media Player 2, to program on M/E 1: a cut, no transition. They
-work in Mixer mode only, and only with the ATEM connected. These two keys are the only thing ShotReady
-ever changes on the switcher.
+**F1** puts Media Player 1, and **F2** Media Player 2, on preview on M/E 1; program is not touched.
+**Shift+F1** and **Shift+F2** cut them to program on M/E 1: a cut, no transition. They work in Mixer mode
+only, and only with the ATEM connected. These keys are the only thing ShotReady ever changes on the
+switcher.
 
 While a camera's menu is open (see Camera menu), W A S D move in the menu instead.
 

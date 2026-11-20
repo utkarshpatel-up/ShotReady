@@ -8,6 +8,7 @@ import {
   bodyIdentity, matchCameras, verdictOf, mandatoryChecks, essentials, shortLens, defaultsPlan, digitalIsPlan, wbPlan, validateOnBody, cameraControls, recordState, focusDrive, focusFrame, oneShotAf, continuousAf, checkFixes, fmtVideo, copyPlan, atemVideoFormat, resolutionControl, resolutionFor,
 } from './engine.mjs';
 import { httpGet } from './http.mjs';
+import { decodeMsgpack } from './msgpack.mjs';
 import { CameraStream } from './stream.mjs';
 import { lumaStats } from './waveform.mjs';
 import { FocusStream, normalizeFocus } from './focus.mjs';
@@ -820,17 +821,20 @@ export class ShotReadyService extends EventEmitter {
 
   // F1 and F2: Media Player 1 or 2 straight to program on M/E 1, as a cut. This is the only thing
   // ShotReady ever changes on the switcher, and only from the Mixer seat.
-  async cutMediaPlayer(n) {
+  // F1 / F2 put Media Player 1 / 2 on preview on M/E 1; with Shift they cut it to program.
+  async cutMediaPlayer(n, to = 'preview') {
     if (n !== 1 && n !== 2) throw new Error('Unknown media player');
-    if (this.state.keyMode === 'assistant') throw new Error(`F${n} cuts to program only in Mixer mode. Nothing was changed.`);
+    if (to !== 'preview' && to !== 'program') throw new Error('Unknown destination');
+    const key = `${to === 'program' ? 'Shift+' : ''}F${n}`;
+    if (this.state.keyMode === 'assistant') throw new Error(`${key} works only in Mixer mode. Nothing was changed.`);
     const a = this.atemSummary();
     if (!a.connected) throw new Error('The ATEM is not connected. Nothing was changed.');
     const input = n === 1 ? 3010 : 3020;
     if (a.inputs && Object.keys(a.inputs).length && !(input in a.inputs)) throw new Error(`This switcher has no Media Player ${n}`);
-    await this.atem.changeProgram(input, 0);
+    if (to === 'program') await this.atem.changeProgram(input, 0); else await this.atem.changePreview(input, 0);
     const name = a.inputs?.[input] || `Media Player ${n}`;
-    this.log('info', `F${n}: ${name} cut to program on M/E 1`);
-    return { input, name };
+    this.log('info', `${key}: ${name} ${to === 'program' ? 'cut to program' : 'put on preview'} on M/E 1`);
+    return { input, name, to };
   }
 
   // One Kelvin step (A down, D up), on the same camera W and S change ISO on. Run one at a time.
@@ -1007,7 +1011,16 @@ export class ShotReadyService extends EventEmitter {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const path = join(this.reportsDir, `${bodyId}-settings-${stamp}.txt`);
     const head = [`# ShotReady settings list: ${bodyId} at ${body.ip}`, `# ${info['s.hardware'] || '?'} firmware ${info['s.firmware'] || '?'}, read ${new Date().toLocaleString()}`, ''];
-    writeFileSync(path, [...head, ...Object.keys(info).sort().map((k) => `${k}=${info[k]}`), ''].join('\r\n'));
+    // One sample of the camera's metadata stream as well: where an electronic level (roll and tilt)
+    // or other live readings would be, flattened to key=value like the settings.
+    let meta = ['', '# metadata (meta.cgi, one sample)'];
+    try {
+      const res = await httpGet(`http://${body.ip}${this.cfg.infoPath.replace(/info\.cgi$/, 'meta.cgi')}?type=once`, this.authForRequests(), 3000);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const flat = (o, p = '') => Object.entries(o || {}).flatMap(([k, v]) => (v && typeof v === 'object' ? flat(v, `${p}${k}.`) : [`${p}${k}=${v}`]));
+      meta.push(...flat(decodeMsgpack(Buffer.from(await res.arrayBuffer()))).sort());
+    } catch (e) { meta.push(`# not read: ${e.message}`); }
+    writeFileSync(path, [...head, ...Object.keys(info).sort().map((k) => `${k}=${info[k]}`), ...meta, ''].join('\r\n'));
     this.log('info', `${bodyId}: settings list saved (${Object.keys(info).length} settings)`);
     return path;
   }

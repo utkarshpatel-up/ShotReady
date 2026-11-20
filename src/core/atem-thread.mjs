@@ -32,13 +32,16 @@ class AtemSession extends EventEmitter {
     else if (m.type === 'error' && this.listenerCount('error')) this.emit('error', m.message);
   }
   snapshot() { return this.data; }
-  // Program on an M/E, the way atem-connection's Atem takes it. Settles when the ATEM has the command.
-  changeProgramInput(input, me = 0) {
+  // Program or preview on an M/E, the way atem-connection's Atem takes them. Settles when the ATEM
+  // has the command.
+  changeProgramInput(input, me = 0) { return this.#send('program', input, me); }
+  changePreviewInput(input, me = 0) { return this.#send('preview', input, me); }
+  #send(type, input, me) {
     return new Promise((resolve, reject) => {
       const req = ++this.reqs;
       const timer = setTimeout(() => { this.waiting.delete(req); reject(new Error('the ATEM did not answer')); }, 3000);
       this.waiting.set(req, { resolve, reject, timer });
-      this.host.post({ type: 'program', id: this.id, req, input, me });
+      this.host.post({ type, id: this.id, req, input, me });
     });
   }
   async connect(ip) { this.host.post({ type: 'connect', id: this.id, ip }); }

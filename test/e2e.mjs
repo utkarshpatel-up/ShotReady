@@ -242,10 +242,52 @@ try {
   await win.keyboard.press('d');
   await win.waitForFunction(() => /^C80-2: \d+ K$/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
   assert.equal(await card('C80-1').locator('.badge.pgm').count(), 1);
+  // F1 alone: Media Player 1 on preview, program untouched. Shift+F1: cut to program.
   await win.keyboard.press('F1');
+  await win.waitForFunction(() => /Media Player 1 on preview/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
+  await win.waitForFunction(() => !document.querySelector('.card[data-body="C80-2"] .badge.pvw'), null, { timeout: 5000 });
+  assert.equal(await card('C80-1').locator('.badge.pgm').count(), 1, 'program is untouched by F1');
+  await win.keyboard.press('Shift+F1');
   await win.waitForFunction(() => /Media Player 1 cut to program/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
   await win.waitForFunction(() => !document.querySelector('.card[data-body="C80-1"] .badge.pgm'), null, { timeout: 5000 });
-  ok('keys: D steps Kelvin on the camera on preview, F1 cuts Media Player 1 to program');
+  ok('keys: D steps Kelvin on the camera on preview, F1 puts Media Player 1 on preview, Shift+F1 cuts it to program');
+
+  // The card: Base ISO where ND was, and SDI red when it is not the ATEM's format (C80-6 sends 1080p).
+  assert.match(await card('C80-2').locator('.facts').textContent(), /ISO\s*\d+\s*·\s*Base \d+/);
+  assert.equal(await card('C80-6').locator('.facts .sdi-bad').textContent(), '1920×1080 25p');
+  assert.match(await card('C80-6').locator('.facts .sdi-bad').getAttribute('title'), /the ATEM \(2160p25\) needs 3840x2160 25p/);
+  assert.equal(await card('C80-2').locator('.facts .sdi-bad').count(), 0);
+  ok('card: Base ISO beside ISO, and SDI red when it does not match the ATEM');
+
+  // The electronic level under the picture: a green dot on an axis within 0.5° of level.
+  await win.waitForFunction(() => /Roll \+0\.2°\s*·\s*Tilt −1\.4°/.test(document.querySelector('.card[data-body="C80-1"] [data-level]')?.textContent || ''), null, { timeout: 8000 });
+  assert.equal(await card('C80-1').locator('[data-level] .lvl-ok').count(), 1, 'roll level: one dot');
+  assert.match(await card('C80-2').locator('[data-level]').textContent(), /Roll \+2\.6°\s*·\s*Tilt \+0\.3°/);
+  assert.equal(await card('C80-2').locator('[data-level] .lvl').first().locator('.lvl-ok').count(), 0, 'roll 2.6° has no dot');
+  assert.equal((await card('C80-3').locator('[data-level]').textContent()).trim(), '—');
+  // Iris under the picture, without opening Adjust (C80-2 has an F2 lens set to F2).
+  assert.match(await card('C80-2').locator('.facts').textContent(), /Iris\s*F2(?![.\d])/);
+  ok('card: the electronic level, with a green dot when level, and the iris');
+
+  // A camera on program and preview at once: the label dropdown keeps its width, the tags stack.
+  await win.evaluate(() => { document.querySelector('.card[data-body="C80-5"] .tally-tags').innerHTML = '<span class="badge pgm">PROGRAM M/E 2</span><span class="badge pvw">PREVIEW</span>'; });
+  const sel = await card('C80-5').locator('.card-head select').boundingBox();
+  assert.ok(sel.width >= 112, `the dropdown keeps its width (${sel.width})`);
+  ok('card header: program and preview tags together do not squash the label dropdown');
+
+  // Number pad, Assistant mode: 2 selects Cam-02's camera; 5 (Cam-05, on program on M/E 2) is refused.
+  await win.locator('#keymode button', { hasText: 'Assistant' }).click();
+  await win.locator('#tabs button', { hasText: 'Dashboard' }).focus();
+  await win.keyboard.press('Numpad2');
+  await win.waitForSelector('.card.selected[data-body="C80-2"]', { timeout: 5000 });
+  await win.keyboard.press('Numpad5');
+  await win.waitForFunction(() => /Cam-05 \(C80-5\) is live and cannot be selected/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
+  assert.equal(await win.locator('.card.selected').getAttribute('data-body'), 'C80-2', 'the live camera was not selected');
+  await win.keyboard.press('s');
+  await win.waitForFunction(() => /^C80-2: ISO \d+/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
+  await win.keyboard.press('w');
+  await win.locator('#keymode button', { hasText: 'Mixer' }).click();
+  ok('number pad: selects a label\'s camera in Assistant mode, never one on program');
 
   // Laptop video: its switcher input cannot be a camera's.
   await tab('Settings');

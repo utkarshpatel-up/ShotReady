@@ -217,7 +217,7 @@ const api = {
   setRecord: (id, on) => svc.setRecord(id, on),
   stepIso: (dir, id) => svc.stepIso(dir > 0 ? 1 : -1, id),
   stepKelvin: (dir, id) => svc.stepKelvin(dir > 0 ? 1 : -1, id),
-  cutMediaPlayer: (n) => svc.cutMediaPlayer(Number(n)),
+  cutMediaPlayer: (n, to) => svc.cutMediaPlayer(Number(n), to === 'program' ? 'program' : 'preview'),
   copyPreview: (from, to) => svc.copyPreview(from, to),
   saveSettingsList: async (id) => { const path = await svc.saveSettingsList(id); shell.showItemInFolder(path); return path; },
   copyApply: (from, to, keys) => svc.copyApply(from, to, Array.isArray(keys) ? keys.map(String) : []),

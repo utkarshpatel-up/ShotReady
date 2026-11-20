@@ -95,7 +95,7 @@ const KEY_MODES = { mixer: 'Mixer', assistant: 'Assistant' };
 function renderKeyMode() {
   $('keymode').replaceChildren(...Object.entries(KEY_MODES).map(([k, name]) => h('button', {
     class: app.keyMode === k ? 'on' : '',
-    title: k === 'mixer' ? 'W and S change ISO and A and D change Kelvin on the camera on preview. F1 and F2 cut Media Player 1 and 2 to program' : 'Click a camera, then W and S change its ISO and A and D its Kelvin',
+    title: k === 'mixer' ? 'W and S change ISO and A and D change Kelvin on the camera on preview. F1 and F2 put Media Player 1 and 2 on preview; Shift+F1 and Shift+F2 cut them to program' : 'Click a camera, then W and S change its ISO and A and D its Kelvin',
     onclick: () => {
       app.keyMode = k;
       renderKeyMode();
@@ -614,16 +614,39 @@ const MENU_KEYS = { w: 'up', a: 'left', s: 'down', d: 'right', ' ': 'enter', q: 
 const MENU_REPEAT_MS = 250;
 const menuHold = { busy: false, last: 0 };
 const osdOn = () => cardsOf(app.result || { labels: [], spares: [] }).some((c) => c.online && c.controls?.find((k) => k.key === 'm.onscreen')?.value === 'on');
+// Number pad 1–9: select the camera on that label (1 = the first label, Cam-01), as a click on its
+// card does. Assistant mode only, and never a camera on program: the same lock as the mouse.
+function numpadSelect(n) {
+  if (app.keyMode !== 'assistant') { toast('Mixer mode: the keys act on the camera on preview. Switch to Assistant to pick a camera with the number pad.', true); return; }
+  const l = app.result?.labels?.[n - 1];
+  if (!l) { toast(`There is no label ${n}`, true); return; }
+  if (!l.body) { toast(`${l.label} has no camera`, true); return; }
+  if (isLocked(cardOf(l.body))) { toast(`${l.label} (${l.body}) is live and cannot be selected`, true); return; }
+  app.selected = l.body;
+  refreshLive();
+  document.querySelector(`.card[data-body="${l.body}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  toast(`${l.label} selected (${l.body})`);
+}
+
 function macroKey(e) {
   const k = e.key.toLowerCase();
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.target.closest?.('input, select, textarea, [contenteditable]') || !$('modal').hidden) return;
-  // F1 and F2: Media Player 1 or 2 cut to program on M/E 1 (Mixer mode). One cut per press.
+  // e.code names the key itself, so this works with Num Lock on or off.
+  const pad = /^Numpad([1-9])$/.exec(e.code);
+  if (pad) {
+    e.preventDefault();
+    if (!e.repeat) numpadSelect(Number(pad[1]));
+    return;
+  }
+  // F1 and F2: Media Player 1 or 2 on preview on M/E 1 (Mixer mode); with Shift, cut to program.
+  // One change per press.
   if (e.key === 'F1' || e.key === 'F2') {
     e.preventDefault();
     if (e.repeat) return;
     const n = e.key === 'F1' ? 1 : 2;
-    act(async () => { const r = await call('cutMediaPlayer', n); if (r) toast(`${r.name} cut to program`); });
+    const to = e.shiftKey ? 'program' : 'preview';
+    act(async () => { const r = await call('cutMediaPlayer', n, to); if (r) toast(`${r.name} ${r.to === 'program' ? 'cut to program' : 'on preview'}`); });
     return;
   }
   if (k === 'm') {
@@ -669,6 +692,24 @@ function macroKey(e) {
     const r = await call('stepIso', dir, app.selected);
     if (r) toast(`${r.body}: ISO ${r.iso}`);
   });
+}
+
+// The camera's electronic level: roll and tilt in degrees, live from its metadata (or its settings).
+// Within LEVEL_OK of level an axis gets a small green dot, like the camera's bubble turning green;
+// otherwise it is plain text, so a slight slope does not shout.
+const LEVEL_OK = 0.5;
+const LEVEL_TIP = `The camera's electronic level. Roll: the horizon's slope; Tilt: pointing up or down. A green dot means within ${LEVEL_OK}° of level.`;
+function levelParts(body) {
+  const l = app.focus[body]?.tiltRoll || cardOf(body)?.essentials?.level;
+  if (!l) return [h('span', { class: 'empty', title: 'This camera does not report its electronic level' }, '—')];
+  const axis = (name, v) => (v === null || v === undefined ? null : h('span', { class: 'lvl' },
+    Math.abs(v) <= LEVEL_OK ? h('i', { class: 'lvl-ok', title: `${name} level` }) : null,
+    `${name} ${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}°`));
+  const parts = [axis('Roll', l.roll), axis('Tilt', l.tilt)].filter(Boolean);
+  return parts.flatMap((p, i) => (i ? ['  ·  ', p] : [p]));
+}
+function paintLevel(body) {
+  for (const d of document.querySelectorAll('[data-level]')) if (d.dataset.level === body) d.replaceChildren(...levelParts(body));
 }
 
 async function setRec(body, on) {
@@ -728,7 +769,11 @@ function card(c) {
     h('div', { class: 'sub-line', title: s?.lens }, `${c.ip}${s ? ` · ${s.model} · ${shortLens(s.lens)}` : ''}`),
     feed.wrap,
     s ? h('dl', { class: 'facts' },
-      h('dt', {}, 'SDI'), h('dd', {}, fmtVideo(s.output)),
+      // SDI not in the switcher's format is red, as on the Checks tab.
+      h('dt', {}, 'SDI'), (() => {
+        const bad = c.results?.find((r) => r.check === 'SDI output' && r.status === 'red');
+        return h('dd', bad ? { class: 'sdi-bad', title: bad.detail } : {}, fmtVideo(s.output));
+      })(),
       h('dt', {}, 'Gamma'), h('dd', { title: s.gamma }, s.gamma),
       h('dt', {}, 'Shutter'), h('dd', {}, s.shutterMode === 'speed' ? `1/${s.shutter}` : s.shutterMode),
       h('dt', {}, 'Focus'), h('dd', { title: 'The AF / MF switch on the lens' }, s.lensFocus === 'af' ? 'AF' : s.lensFocus === 'mf' ? 'MF' : '—'),
@@ -737,12 +782,15 @@ function card(c) {
       // ISO above the Base ISO range is red: a grainy picture that has lost sharpness.
       h('dt', {}, 'ISO'), h('dd', {},
         c.essentials?.isoOver ? h('span', { class: 'iso-over', title: `ISO ${s.iso} is above the Base ISO ${c.essentials.baseIso}: grainy picture, lost sharpness` }, s.iso) : s.iso,
-        h('span', { class: 'nd' }, `  ·  ND ${s.nd}`)),
+        h('span', { class: 'nd', title: 'The camera\'s Base ISO. ISO above it is shown red.' }, `  ·  Base ${c.essentials?.baseIso ?? '—'}`)),
       h('dt', {}, 'People Priority'), h('dd', { title: DETECT_TIP[s.detect] || s.detect }, DETECT[s.detect] || s.detect || '—'),
       h('dt', { title: 'Peak and average level, calculated from the camera preview frame' }, 'WFM'), h('dd', { 'data-wfm': c.body }, fmtWave(app.waves[c.body])),
       h('dt', {}, 'Power'), h('dd', { class: s.power?.battery ? 'on-battery' : '', title: s.power ? `The camera reports its power source as ${s.power.source}` : '' }, s.power?.text || '—'),
       h('dt', {}, 'SD Card'), sdCards(s.media),
-      h('dt', { title: 'Peak of each colour, calculated from the camera preview frame' }, 'RGB'), h('dd', { 'data-rgb': c.body }, fmtRgb(app.waves[c.body]))) : null,
+      h('dt', { title: 'Peak of each colour, calculated from the camera preview frame' }, 'RGB'), h('dd', { 'data-rgb': c.body }, fmtRgb(app.waves[c.body])),
+      // Iris on a row of its own, so the readings above keep their places.
+      h('dt', { class: 'row-start' }, 'Iris'), h('dd', { title: c.essentials?.aperture ? 'The f-stop the lens is set to' : 'No lens reported, or the camera does not report its iris' }, c.essentials?.aperture || '—'),
+      h('dt', { class: 'row-start', title: LEVEL_TIP }, 'Level'), h('dd', { 'data-level': c.body }, ...levelParts(c.body))) : null,
     c.spare ? h('div', { class: 'spare-note' }, c.online ? 'Spare: not counted in the verdict until it has a label.' : 'Spare and offline.') : null,
     c.online && c.controls?.length && app.adjust.has(c.body) ? adjustPanel(c) : null,
     h('div', { class: 'card-actions' },
@@ -1665,6 +1713,7 @@ async function start() {
   api.on('focus', ({ body, focus }) => {
     if (focus) app.focus[body] = focus; else delete app.focus[body];
     paintFeed(body);
+    paintLevel(body);
   });
   api.on('feedstat', ({ body, fps }) => {
     const f = app.feeds[body];
