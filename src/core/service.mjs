@@ -777,12 +777,11 @@ export class ShotReadyService extends EventEmitter {
     return this.cfg.bodies.filter((b) => this.reads[b.id]?.info?.['m.onscreen'] === 'on').map((b) => b.id);
   }
 
-  // The camera the mode points at: Assistant, the selected one; Mixer, the one on preview.
+  // The camera the mode points at: the one picked (a click in Assistant mode, the number pad in
+  // either mode), else in Mixer mode the one on preview.
   #modeCamera(selected) {
-    if (this.state.keyMode === 'assistant') {
-      if (!selected) throw new Error('Click a camera to select it first');
-      return selected;
-    }
+    if (selected) return selected;
+    if (this.state.keyMode === 'assistant') throw new Error('Pick a camera first: click it, or press its number on the number pad');
     const cam = this.previewCamera();
     if (!cam) throw new Error('No camera on preview');
     return cam.body;
@@ -835,17 +834,50 @@ export class ShotReadyService extends EventEmitter {
     return run;
   }
 
-  // Mixer: only ever the camera on preview. Assistant: the camera that person has selected.
-  #isoTarget(selected) {
-    if (this.state.keyMode === 'assistant') {
-      if (!selected) throw new Error('Click a camera to select it first');
-      this.#guardLive(selected);
+  // The camera the picture keys change: the one picked (a click in Assistant mode, the number pad in
+  // either mode), else in Mixer mode the one on preview. Never a camera on program.
+  #isoTarget(selected, what = 'ISO') {
+    if (selected) {
+      if (this.state.keyMode === 'assistant') this.#guardLive(selected);
+      else if (this.isLive(selected)) throw new Error(`${selected} is on program, so its ${what} was not changed`);
       return selected;
     }
+    if (this.state.keyMode === 'assistant') throw new Error('Pick a camera first: click it, or press its number on the number pad');
     const cam = this.previewCamera();
     if (!cam) throw new Error('No camera on preview');
-    if (cam.tally.program.length) throw new Error(`${cam.body} is on program too, so its ISO was not changed`);
+    if (cam.tally.program.length) throw new Error(`${cam.body} is on program too, so its ${what} was not changed`);
     return cam.body;
+  }
+
+  // One Base ISO step (Ctrl+W up, Ctrl+S down) through the camera's own list, Auto left out. On the
+  // same camera W and S change ISO on, and never one on program.
+  stepBaseIso(dir, selected) {
+    const run = this.isoChain.catch(() => {}).then(() => this.#stepBaseIso(dir, selected));
+    this.isoChain = run;
+    return run;
+  }
+
+  async #stepBaseIso(dir, selected) {
+    const id = this.#isoTarget(selected, 'Base ISO');
+    const body = this.findBody(id);
+    const info = this.reads[id]?.info;
+    if (!body || !info) throw new Error(`${id} is not online`);
+    const control = cameraControls(info).find((c) => c.name === 'Base ISO');
+    if (!control) throw new Error(`${id} does not offer its Base ISO to be changed`);
+    const num = (v) => Number(String(v).match(/\d{3,}/)?.[0]);
+    const steps = control.options.filter((o) => num(o.value) > 0).sort((a, b) => num(a.value) - num(b.value));
+    const sent = this.baseIsoSent?.[id];
+    const from = sent && Date.now() - sent.at < 1500 ? sent.value : control.value;
+    if (!(num(from) > 0)) throw new Error(`${id}: Base ISO is on Auto. Pick one in Adjust first`);
+    const next = dir > 0 ? steps.find((o) => num(o.value) > num(from)) : steps.findLast((o) => num(o.value) < num(from));
+    if (!next) throw new Error(`${id} is already at its ${dir > 0 ? 'highest' : 'lowest'} Base ISO`);
+    await this.control(body, { [control.key]: next.value });
+    (this.baseIsoSent ||= {})[id] = { value: next.value, at: Date.now() };
+    this.log('info', `${id}: Base ISO set to ${num(next.value)} from the keyboard`);
+    clearTimeout(this.isoRefresh);
+    this.isoRefresh = setTimeout(() => this.check({ force: true }).catch(() => {}), 400);
+    await sleep(50);
+    return { body: id, baseIso: num(next.value) };
   }
 
   async #stepIso(dir, selected) {
@@ -897,7 +929,7 @@ export class ShotReadyService extends EventEmitter {
   }
 
   async #stepKelvin(dir, selected) {
-    const id = this.#isoTarget(selected);
+    const id = this.#isoTarget(selected, 'Kelvin');
     const body = this.findBody(id);
     const info = this.reads[id]?.info;
     if (!body || !info) throw new Error(`${id} is not online`);

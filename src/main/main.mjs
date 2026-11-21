@@ -287,6 +287,7 @@ const api = {
   bodies: () => svc.bodiesView(),
   sheet: () => svc.sheet(),
   workload: () => svc.workloadView(),
+  stepBaseIso: (dir, id) => svc.stepBaseIso(Number(dir) > 0 ? 1 : -1, id || null),
   setBaselineHours: (id, hours) => svc.setBaselineHours(id, hours),
   events: () => svc.events,
   settings: () => svc.settingsView(),

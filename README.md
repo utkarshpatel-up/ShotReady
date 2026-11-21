@@ -214,16 +214,21 @@ sample of the camera's metadata, so the file shows whether and where a camera re
 
 ## Keyboard
 
-With the ShotReady window in front, **W** raises and **S** lowers ISO by one step, and **D** raises and
-**A** lowers Kelvin by one step (white balance must be on Kelvin). Choose who they are for at the top of
-the window:
+With the ShotReady window in front, **W** raises and **S** lowers ISO by one step, **D** raises and
+**A** lowers Kelvin by one step (white balance must be on Kelvin), and **Ctrl+W** raises and **Ctrl+S**
+lowers Base ISO by one step of the camera's own list (Auto is left out: a camera on Auto Base ISO is
+set in Adjust first). Choose who they are for at the top of the window:
 
-- **Mixer**: the camera the switcher has on preview (M/E 1 first). A camera also on program is left alone.
-- **Assistant**: the camera last clicked on, which gets a blue outline. A camera on program cannot be
-  selected or changed in this mode, and nothing can be changed while the ATEM is disconnected.
-  The **number pad** picks the camera without the mouse: **1** selects the camera on the first label
-  (Cam-01), **2** the second, and so on up to 9, with Num Lock on or off. A camera on program is not
-  selected, as with a click.
+- **Mixer**: the camera the switcher has on preview (M/E 1 first), or the camera picked with the number
+  pad. A camera on program is left alone.
+- **Assistant**: the camera last clicked on or picked with the number pad. A camera on program cannot be
+  picked or changed in this mode, and nothing can be changed while the ATEM is disconnected.
+
+The **number pad** picks the camera without the mouse, in either mode: **1** picks the camera on the
+first label (Cam-01), **2** the second, and so on up to 9, with Num Lock on or off. The picked camera gets
+a blue outline. A camera on program is never picked, and a picked camera that goes to program is let go.
+In Mixer mode **0** hands the keys back to the camera on preview. Switching between Mixer and Assistant
+starts with no camera picked.
 
 **F1** puts Media Player 1, and **F2** Media Player 2, on preview on M/E 1; program is not touched.
 **Shift+F1** and **Shift+F2** cut them to program on M/E 1: a cut, no transition. They work in Mixer mode

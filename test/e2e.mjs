@@ -280,19 +280,41 @@ try {
   assert.ok(sel.width >= 112, `the dropdown keeps its width (${sel.width})`);
   ok('card header: program and preview tags together do not squash the label dropdown');
 
-  // Number pad, Assistant mode: 2 selects Cam-02's camera; 5 (Cam-05, on program on M/E 2) is refused.
+  // Number pad, Assistant mode: 2 picks Cam-02's camera; 5 (Cam-05, on program on M/E 2) is refused.
+  const toastIs = (re) => win.waitForFunction((src) => new RegExp(src).test(document.getElementById('toast').textContent), re.source, { timeout: 5000 });
   await win.locator('#keymode button', { hasText: 'Assistant' }).click();
   await win.locator('#tabs button', { hasText: 'Dashboard' }).focus();
   await win.keyboard.press('Numpad2');
   await win.waitForSelector('.card.selected[data-body="C80-2"]', { timeout: 5000 });
   await win.keyboard.press('Numpad5');
-  await win.waitForFunction(() => /Cam-05 \(C80-5\) is live and cannot be selected/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
-  assert.equal(await win.locator('.card.selected').getAttribute('data-body'), 'C80-2', 'the live camera was not selected');
+  await toastIs(/Cam-05 \(C80-5\) is live and cannot be picked/);
+  assert.equal(await win.locator('.card.selected').getAttribute('data-body'), 'C80-2', 'the live camera was not picked');
   await win.keyboard.press('s');
-  await win.waitForFunction(() => /^C80-2: ISO \d+/.test(document.getElementById('toast').textContent), null, { timeout: 5000 });
+  await toastIs(/^C80-2: ISO \d+/);
   await win.keyboard.press('w');
+  // Ctrl+W / Ctrl+S: Base ISO up and down on the picked camera.
+  await win.keyboard.press('Control+w');
+  await toastIs(/^C80-2: Base ISO 12800$/);
+  await win.keyboard.press('Control+s');
+  await toastIs(/^C80-2: Base ISO 3200$/);
+  ok('number pad: picks a label\'s camera in Assistant mode, never one on program; Ctrl+W / Ctrl+S step its Base ISO');
+
+  // Mixer mode: the pick is not carried over; the number pad picks there too, and 0 goes back to preview.
   await win.locator('#keymode button', { hasText: 'Mixer' }).click();
-  ok('number pad: selects a label\'s camera in Assistant mode, never one on program');
+  assert.equal(await win.locator('.card.selected').count(), 0, 'Mixer starts on preview again');
+  await win.locator('#tabs button', { hasText: 'Dashboard' }).focus();
+  await win.keyboard.press('Numpad4');
+  await win.waitForSelector('.card.selected[data-body="C80-4"]', { timeout: 5000 });
+  await win.keyboard.press('Control+w');
+  await toastIs(/^C80-4: Base ISO 12800$/);
+  await win.keyboard.press('Control+s');
+  await toastIs(/^C80-4: Base ISO 3200$/);
+  await win.keyboard.press('Numpad5');
+  await toastIs(/Cam-05 \(C80-5\) is live and cannot be picked/);
+  await win.keyboard.press('Numpad0');
+  await toastIs(/Keys back on the camera on preview/);
+  assert.equal(await win.locator('.card.selected').count(), 0);
+  ok('number pad in Mixer mode: picks a camera for the keys, never one on program, and 0 goes back to preview');
 
   // Laptop video: its switcher input cannot be a camera's.
   await tab('Settings');

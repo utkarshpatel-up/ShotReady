@@ -96,8 +96,10 @@ const KEY_MODES = { mixer: 'Mixer', assistant: 'Assistant' };
 function renderKeyMode() {
   $('keymode').replaceChildren(...Object.entries(KEY_MODES).map(([k, name]) => h('button', {
     class: app.keyMode === k ? 'on' : '',
-    title: k === 'mixer' ? 'W and S change ISO and A and D change Kelvin on the camera on preview. F1 and F2 put Media Player 1 and 2 on preview; Shift+F1 and Shift+F2 cut them to program' : 'Click a camera, then W and S change its ISO and A and D its Kelvin',
+    title: k === 'mixer' ? 'W and S change ISO, A and D Kelvin, Ctrl+W and Ctrl+S Base ISO on the camera on preview, or on the camera picked with the number pad (0 goes back to preview). F1 and F2 put Media Player 1 and 2 on preview; Shift+F1 and Shift+F2 cut them to program' : 'Click a camera or press its number on the number pad, then W and S change its ISO, A and D its Kelvin, Ctrl+W and Ctrl+S its Base ISO',
     onclick: () => {
+      // A camera picked in one mode is not carried into the other: Mixer starts on preview again.
+      if (app.keyMode !== k) app.selected = null;
       app.keyMode = k;
       renderKeyMode();
       refreshLive();
@@ -614,26 +616,44 @@ const MENU_KEYS = { w: 'up', a: 'left', s: 'down', d: 'right', ' ': 'enter', q: 
 const MENU_REPEAT_MS = 250;
 const menuHold = { busy: false, last: 0 };
 const osdOn = () => cardsOf(app.result || { labels: [], spares: [] }).some((c) => c.online && c.controls?.find((k) => k.key === 'm.onscreen')?.value === 'on');
-// Number pad 1–9: select the camera on that label (1 = the first label, Cam-01), as a click on its
-// card does. Assistant mode only, and never a camera on program: the same lock as the mouse.
+// Number pad 1–9: pick the camera on that label (1 = the first label, Cam-01), in either mode. The
+// keys then act on it; in Mixer mode, 0 hands them back to the camera on preview. A camera on
+// program is never picked, as with a click.
+const onProgram = (body) => !!cardOf(body)?.tally?.program?.length;
 function numpadSelect(n) {
-  if (app.keyMode !== 'assistant') { toast('Mixer mode: the keys act on the camera on preview. Switch to Assistant to pick a camera with the number pad.', true); return; }
+  if (n === 0) {
+    app.selected = null;
+    refreshLive();
+    toast(app.keyMode === 'mixer' ? 'Keys back on the camera on preview' : 'No camera picked');
+    return;
+  }
   const l = app.result?.labels?.[n - 1];
   if (!l) { toast(`There is no label ${n}`, true); return; }
   if (!l.body) { toast(`${l.label} has no camera`, true); return; }
-  if (isLocked(cardOf(l.body))) { toast(`${l.label} (${l.body}) is live and cannot be selected`, true); return; }
+  if (isLocked(cardOf(l.body)) || onProgram(l.body)) { toast(`${l.label} (${l.body}) is live and cannot be picked`, true); return; }
   app.selected = l.body;
   refreshLive();
   document.querySelector(`.card[data-body="${l.body}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  toast(`${l.label} selected (${l.body})`);
+  toast(`${l.label} picked (${l.body})${app.keyMode === 'mixer' ? ': the keys act on it. 0 goes back to preview' : ''}`);
+}
+
+// Ctrl+W and Ctrl+S: Base ISO up and down, one step of the camera's own list, on the camera the keys
+// act on. In either mode; never a camera on program.
+function stepBaseIso(dir) {
+  act(async () => { const r = await call('stepBaseIso', dir, app.selected); if (r) toast(`${r.body}: Base ISO ${r.baseIso}`); });
 }
 
 function macroKey(e) {
   const k = e.key.toLowerCase();
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.target.closest?.('input, select, textarea, [contenteditable]') || !$('modal').hidden) return;
+  if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && (e.code === 'KeyW' || e.code === 'KeyS')) {
+    e.preventDefault();
+    if (!e.repeat) stepBaseIso(e.code === 'KeyW' ? 1 : -1);
+    return;
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   // e.code names the key itself, so this works with Num Lock on or off.
-  const pad = /^Numpad([1-9])$/.exec(e.code);
+  const pad = /^Numpad([0-9])$/.exec(e.code);
   if (pad) {
     e.preventDefault();
     if (!e.repeat) numpadSelect(Number(pad[1]));
@@ -759,7 +779,7 @@ function card(c) {
   const onPgm = tally?.program?.length, onPvw = tally?.preview?.length;
   const feed = feedEl(c.body);
 
-  const section = h('section', { class: `card ${c.spare ? 'spare' : cardColor(c)} ${c.online ? '' : 'offline'} ${app.keyMode === 'assistant' && app.selected === c.body ? 'selected' : ''}`, 'data-body': c.body, 'data-tally': onPgm ? 'pgm' : onPvw ? 'pvw' : '', onclick: (e) => pickCamera(c.body, e) },
+  const section = h('section', { class: `card ${c.spare ? 'spare' : cardColor(c)} ${c.online ? '' : 'offline'} ${app.selected === c.body ? 'selected' : ''}`, 'data-body': c.body, 'data-tally': onPgm ? 'pgm' : onPvw ? 'pvw' : '', onclick: (e) => pickCamera(c.body, e) },
     h('div', { class: 'card-head', onpointerdown: startCardDrag, title: 'Drag to move this camera' },
       h('span', { class: 'name' }, c.body),
       h('span', { class: 'tally-tags' },
@@ -800,6 +820,13 @@ function card(c) {
       recButton(c),
       lutButton(c),
       c.online && c.controls?.length ? h('button', { class: `small adjust-btn ${app.adjust.has(c.body) ? 'on' : ''}`, onclick: () => toggleAdjust(c.body) }, app.adjust.has(c.body) ? 'Done' : 'Adjust') : null));
+  // A picked camera that goes to program is let go, in either mode: in Mixer mode the keys go back to
+  // the camera on preview.
+  if (app.selected === c.body && onPgm) {
+    app.selected = null;
+    section.classList.remove('selected');
+    toast(`${c.body} went to program: ${app.keyMode === 'mixer' ? 'the keys are back on the camera on preview' : 'pick another camera'}`, true);
+  }
   if (isLocked(c)) {
     if (app.selected === c.body) app.selected = null;
     section.classList.remove('selected');

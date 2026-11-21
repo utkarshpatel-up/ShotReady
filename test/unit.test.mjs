@@ -773,3 +773,37 @@ test('tally lamps: a cut lights only the cameras it involves, a moment of the AT
   assert.deepEqual(['C80-1', 'C80-2', 'C80-3'].map(lamp), ['off', 'preview', 'program']);
   svc.stop();
 });
+
+test('Base ISO keys and the picked camera: Ctrl+W / Ctrl+S step Base ISO, in either mode, never on a camera on program', async () => {
+  const atem = new FakeAtemLink({ modeName: 'P4KHDp25', modeLabel: '2160p25', inputs: { 1: 'Cam-01', 2: 'Cam-02', 3: 'Cam-03' }, mixEffects: [{ program: 1, preview: 2 }] });
+  const svc = new ShotReadyService(mkdtempSync(join(tmpdir(), 'shotready-')), { defaultConfig: sim.config({ pollSeconds: 3600 }), dupDelayMs: 1, atem });
+  await svc.assignInOrder();
+  await svc.check({ force: true });
+  const sent = (id) => sim.bodies[id].controls.map((c) => c['c.1.me.baseiso']).filter(Boolean);
+  for (const b of Object.values(sim.bodies)) b.controls = [];
+
+  // Mixer, nothing picked: the camera on preview (C80-2), up and down the camera's list, Auto left out.
+  assert.deepEqual(await svc.stepBaseIso(1), { body: 'C80-2', baseIso: 12800 });
+  await assert.rejects(svc.stepBaseIso(1), /already at its highest Base ISO/, 'stepped from the value just sent');
+  assert.deepEqual(await svc.stepBaseIso(-1), { body: 'C80-2', baseIso: 3200 });
+  assert.deepEqual(await svc.stepBaseIso(-1), { body: 'C80-2', baseIso: 800 });
+  await assert.rejects(svc.stepBaseIso(-1), /already at its lowest Base ISO/);
+  assert.deepEqual(sent('C80-2'), ['iso12800_12db', 'iso3200_12db', 'iso800_12db']);
+
+  // Mixer, a camera picked with the number pad: the keys act on it, ISO included; never one on program.
+  assert.deepEqual(await svc.stepBaseIso(1, 'C80-3'), { body: 'C80-3', baseIso: 12800 });
+  assert.equal((await svc.stepIso(1, 'C80-3')).body, 'C80-3');
+  await assert.rejects(svc.stepBaseIso(1, 'C80-1'), /C80-1 is on program, so its Base ISO was not changed/);
+  await assert.rejects(svc.stepIso(1, 'C80-1'), /C80-1 is on program, so its ISO was not changed/);
+  assert.deepEqual(sent('C80-1'), []);
+
+  // Assistant: the picked camera only, and none on program.
+  svc.setKeyMode('assistant');
+  await assert.rejects(svc.stepBaseIso(1), /Pick a camera first/);
+  await assert.rejects(svc.stepBaseIso(1, 'C80-1'), /Assistant mode: C80-1 is live/);
+  sim.bodies['C80-2'].info = { ...sim.bodies['C80-2'].info, 'c.1.me.baseiso': 'auto' };
+  await svc.check({ force: true });
+  svc.baseIsoSent = {}; // the value sent a moment ago is otherwise stepped from, as the camera's report can lag
+  await assert.rejects(svc.stepBaseIso(1, 'C80-2'), /Base ISO is on Auto/);
+  svc.stop();
+});
