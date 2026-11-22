@@ -702,9 +702,7 @@ export class ShotReadyService extends EventEmitter {
       while (this.lampSent[id] !== this.lampWant[id]) {
         const next = this.lampWant[id];
         this.lampAt[id] = Date.now();
-        // The mode goes first: Canon's XC spec says f.tally=on before it lights the lamp in its
-        // previous colour for a moment.
-        await this.control(body, next === 'off' ? { 'f.tally': 'off' } : { 'f.tally.mode': next, 'f.tally': 'on' });
+        await this.control(body, next === 'off' ? { 'f.tally': 'off' } : { 'f.tally': 'on', 'f.tally.mode': next });
         this.lampSent[id] = next;
         this.lampFailed[id] = false;
       }

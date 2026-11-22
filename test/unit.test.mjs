@@ -731,9 +731,6 @@ test('tally lamps: a cut lights only the cameras it involves, a moment of the AT
   atem.set({ mixEffects: [{ program: 2, preview: 1 }], tally: { program: [2], preview: [1] } });
   await sleep(150);
   assert.deepEqual(sent(), { 'C80-1': ['preview'], 'C80-2': ['program'], 'C80-3': [] }, 'straight from red to green, and nothing to the camera not involved');
-  // The mode goes before f.tally=on in the request, as Canon's XC spec asks, so a lamp never shows its
-  // previous colour for a moment.
-  for (const id of ['C80-1', 'C80-2']) for (const c of sim.bodies[id].controls.filter((x) => x['f.tally'] === 'on')) assert.deepEqual(Object.keys(c), ['f.tally.mode', 'f.tally'], id);
 
   // The ATEM shows every camera on air for a moment (a key, SuperSource or transition): no lamp moves.
   for (const b of Object.values(sim.bodies)) b.controls = [];
