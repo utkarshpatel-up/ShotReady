@@ -33,12 +33,16 @@ export const labelName = (i) => `Cam-${String(i + 1).padStart(2, '0')}`;
 const mac = (n) => `00:00:85:00:00:${String(n).padStart(2, '0')}`;
 
 // One believable show: mostly fine, with each kind of finding appearing once.
+export const SIM_SENSOR = (mode) => ({ 'sim.sensor.mode': mode, 'sim.sensor.mode.list': 'full,s35,s16' });
+
 export function demoBodies() {
   return [
     // An electronic level in the metadata (the field name is the simulator's own): C80-1 level, C80-2 not.
-    { id: 'C80-1', info: goodCamera({ 's.hardware.address': mac(1) }), level: { roll: 0.2, tilt: -1.4 } },
+    // A sensor mode setting (also the simulator's own name; a real C80 on 1.0.6.1 reports none):
+    // C80-1 on Full frame, C80-3 on a Super 35 crop, the others not reporting it.
+    { id: 'C80-1', info: goodCamera({ 's.hardware.address': mac(1), ...SIM_SENSOR('full') }), level: { roll: 0.2, tilt: -1.4 } },
     { id: 'C80-2', info: goodCamera({ 's.hardware.address': mac(2), 'c.1.lens.name': 'RF24-70mm F2 L IS USM', 'c.1.me.diaphragm': '200' }), level: { roll: 2.6, tilt: 0.3 } },
-    { id: 'C80-3', info: goodCamera({ 's.hardware.address': mac(3), 'c.1.gamma': 'canon709_bt709', 'c.1.lens.name': 'RF24-105mm F4 L IS USM' }) },
+    { id: 'C80-3', info: goodCamera({ 's.hardware.address': mac(3), 'c.1.gamma': 'canon709_bt709', 'c.1.lens.name': 'RF24-105mm F4 L IS USM', ...SIM_SENSOR('s35') }) },
     { id: 'C80-4', info: goodCamera({ 's.hardware.address': mac(4), 'c.1.lens.focus': 'mf', 'f.rec.media1.status': 'unrecordable', 'f.rec.media1.remainingtime': '0', 'f.rec.media2.status': 'unrecordable', 'f.rec.media2.remainingtime': '0', 'f.timecode.frame': 'df' }) },
     { id: 'C80-5', info: goodCamera({ 's.hardware.address': mac(5), 'c.1.wb.kelvin': '4300', 'f.rec.media2.status': 'unrecordable', 'f.rec.media2.remainingtime': '0', 'c.1.focus': 'auto', 'c.1.focus.auto': 'continuous', 'c.1.lens.focus': 'mf', 'c.1.focus.detect': 'off', 'c.1.me.iso': '6400', 'c.1.me.diaphragm': '400' }) },
     { id: 'C80-6', info: goodCamera({ 's.hardware.address': mac(6), 's.power.source': 'battery', 's.power.volt': '', 's.power.percent': '62', 'f.rec.media1.status': 'unrecordable', 'f.rec.media1.remainingtime': '0', 'f.rec.media2.remainingtime': '35', 's.firmware': '1.0.6.0', 'c.1.eis': 'on', 'f.output1.videoinfo': '1920x1080:25000:P', 'c.1.focus.frame.1': 'auto' }) },

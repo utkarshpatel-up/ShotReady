@@ -241,6 +241,8 @@ export function essentials(info, s, std) {
     aperture: !raw ? null : n >= 100 ? `F${n / 100}` : n > 0 ? `F${n}` : raw,
     digitalIS: pick('digitalIS'),
     level: levelIn(info),
+    // null: the camera does not report its sensor mode (see sensorControl).
+    sensor: sensorControl(info) ? sensorText(sensorControl(info).value) : null,
   };
 }
 
@@ -345,6 +347,8 @@ export function cameraControls(info) {
   add('m.onscreen', 'OSD', (v) => (v === 'on' ? 'On' : 'Off'));
   const res = resolutionControl(info);
   if (res) out.push({ key: res.key, name: 'Resolution', value: res.value, options: res.list.map((value) => ({ value, text: resText(value) })) });
+  const sensor = sensorControl(info);
+  if (sensor) out.push({ key: sensor.key, name: 'Sensor mode', value: sensor.value, options: sensor.list.map((value) => ({ value, text: sensorText(value) })) });
   return out;
 }
 
@@ -400,6 +404,25 @@ export function resolutionFor(ctl, want) {
   return cands.find((v) => (uhd ? /3840|uhd/i : /1920|fhd/i).test(v)) || cands[0] || null;
 }
 const resText = (v) => (/^\d+x\d+:\d+:[PI]$/.test(v) ? fmtVideo(v) : v);
+
+// The sensor mode (Full frame or Super 35 crop), where the camera offers it as a setting: a key
+// about the sensor or image area whose list holds both a full-frame and a Super 35 value. A real
+// C80 (firmware 1.0.6.1) reports none, so this finds one on a camera or firmware that does, without
+// guessing a key name; with none, the mode is changed in the camera's own menu.
+const SENSOR_KEY = /(sensor|imager|image\.?area|crop|super35|s35)/i;
+const isFullFrame = (v) => /^(full|ff)|full.?frame/i.test(v);
+export const isSuper35 = (v) => /(^|[^a-z0-9])s35|super.?35|crop.?35|^crop$/i.test(String(v));
+export function sensorControl(info) {
+  for (const k of Object.keys(info).sort()) {
+    if (!k.endsWith('.list')) continue;
+    const key = k.slice(0, -5);
+    if (!SENSOR_KEY.test(key) || /clean|temp|fan|area\.(x|y)/i.test(key)) continue;
+    const list = String(info[k]).split(',').filter(Boolean);
+    if (list.some(isFullFrame) && list.some(isSuper35)) return { key, value: info[key] ?? '', list };
+  }
+  return null;
+}
+export const sensorText = (v) => (isSuper35(v) ? 'Super 35' : isFullFrame(v) ? 'Full frame' : /(^|[^a-z0-9])s16|super.?16/i.test(v) ? 'Super 16' : v || '—');
 
 // Digital IS on or off, under the first key this camera reports it by. On is the camera's own first
 // On mode (cameras report on1, on2…): on1 when it says nothing, as read from a real C80.

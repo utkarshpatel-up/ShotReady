@@ -489,6 +489,12 @@ function copyRow(c) {
 
 // Where the camera cannot take its resolution over the network, Adjust says so, with what it sends
 // now and what the switcher needs. Where it can, Resolution is one of the settings below.
+// Where the camera does not report its sensor mode, Adjust says so and where to change it.
+function sensorRow(c) {
+  if (!c.online || c.controls?.some((k) => k.name === 'Sensor mode')) return null;
+  return h('div', { class: 'dis-row' }, 'Sensor mode: this camera does not report it over the network. Change it in the camera\'s own menu: pick this camera and press M to open the menu from here.');
+}
+
 function sdiRow(c) {
   if (!c.sdi || c.sdi.settable) return null;
   const ok = c.sdi.now === c.sdi.want;
@@ -564,7 +570,7 @@ async function showCopy(from, to) {
 
 // Dropdowns for one camera, opened with Adjust. A change goes to the camera as soon as it is picked.
 function adjustPanel(c) {
-  return h('div', { class: 'adjust' }, copyRow(c), digitalIsRow(c), sdiRow(c), c.controls.map((ctl) => {
+  return h('div', { class: 'adjust' }, copyRow(c), digitalIsRow(c), sdiRow(c), sensorRow(c), c.controls.map((ctl) => {
     const known = ctl.options.some((o) => o.value === ctl.value);
     return h('label', {}, ctl.name, h('select', {
       'aria-label': `${ctl.name} on ${c.body}`,
@@ -810,6 +816,10 @@ function card(c) {
       h('dt', { title: 'Peak of each colour, calculated from the camera preview frame' }, 'RGB'), h('dd', { 'data-rgb': c.body, title: 'Peak of red, green and blue, in percent, from the camera preview frame' }, fmtRgb(app.waves[c.body])),
       // Iris on a row of its own, so the readings above keep their places.
       h('dt', { class: 'row-start' }, 'Iris'), h('dd', { title: c.essentials?.aperture ? 'The f-stop the lens is set to' : 'No lens reported, or the camera does not report its iris' }, c.essentials?.aperture || '—'),
+      // Sensor mode, beside Iris, only where the camera reports it. Super 35 stands out: it crops the
+      // picture and changes every lens's field of view.
+      ...(c.essentials?.sensor ? [h('dt', { title: 'The sensor mode: Full frame, or a Super 35 crop' }, 'Sensor'),
+        h('dd', { class: c.essentials.sensor === 'Super 35' ? 'sensor-crop' : '', title: c.essentials.sensor === 'Super 35' ? 'Super 35 crop: the picture is cropped from the middle of the sensor' : 'Full frame' }, c.essentials.sensor)] : []),
       h('dt', { class: 'row-start', title: LEVEL_TIP }, 'Level'), h('dd', { 'data-level': c.body }, ...levelParts(c.body))) : null,
     c.spare ? h('div', { class: 'spare-note' }, c.online ? 'Spare: not counted in the verdict until it has a label.' : 'Spare and offline.') : null,
     c.online && c.controls?.length && app.adjust.has(c.body) ? adjustPanel(c) : null,

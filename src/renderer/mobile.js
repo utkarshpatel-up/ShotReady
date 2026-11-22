@@ -38,6 +38,10 @@ function facts(c) {
   f('Iris', c.iris);
   f('WB', c.wb);
   f('SDI', c.sdi, !!c.sdiBad, c.sdiBad || '');
+  if (c.sensor) {
+    f('Sensor', c.sensor, false, c.sensor === 'Super 35' ? 'Super 35 crop' : '');
+    if (c.sensor === 'Super 35') out.at(-1).classList.add('crop');
+  }
   if (c.digitalIS && !/^off$/i.test(c.digitalIS)) f('Dig IS', c.digitalIS, true);
   return out;
 }

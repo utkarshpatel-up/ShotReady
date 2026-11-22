@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ShotReadyService } from '../src/core/service.mjs';
 import dgram from 'node:dgram';
-import { checkCamera, summarize, PROFILES, DEFAULT_STANDARDS, mandatoryChecks, oneShotAf, continuousAf, copyPlan, digitalIsPlan, cameraControls, atemVideoFormat, resolutionControl, resolutionFor, levelIn, essentials, powerOf } from '../src/core/engine.mjs';
+import { checkCamera, summarize, PROFILES, DEFAULT_STANDARDS, mandatoryChecks, oneShotAf, continuousAf, copyPlan, digitalIsPlan, cameraControls, atemVideoFormat, resolutionControl, resolutionFor, levelIn, sensorControl, sensorText, essentials, powerOf } from '../src/core/engine.mjs';
 import { findAtems, parseDns, atemsInAnswer, sweepTargets, mdnsQuery } from '../src/core/atem-discovery.mjs';
 import { decodeJpeg } from '../src/core/jpeg.mjs';
 import { parseCube, rangesFromName } from '../src/core/cube.mjs';
@@ -20,7 +20,7 @@ import { RtmpTestServer } from '../src/sim/rtmp-server.mjs';
 import { lumaStats } from '../src/core/waveform.mjs';
 import { AtemLink, FakeAtemLink } from '../src/core/atem.mjs';
 import { AtemThread } from '../src/core/atem-thread.mjs';
-import { startSimulator, goodCamera } from '../src/sim/cameras.mjs';
+import { startSimulator, SIM_SENSOR, goodCamera } from '../src/sim/cameras.mjs';
 
 const mac = (n) => `00:00:85:00:00:0${n}`;
 const find = (rows, check) => rows.find((x) => x.check === check);
@@ -731,6 +731,9 @@ test('tally lamps: a cut lights only the cameras it involves, a moment of the AT
   atem.set({ mixEffects: [{ program: 2, preview: 1 }], tally: { program: [2], preview: [1] } });
   await sleep(150);
   assert.deepEqual(sent(), { 'C80-1': ['preview'], 'C80-2': ['program'], 'C80-3': [] }, 'straight from red to green, and nothing to the camera not involved');
+  // The mode goes before f.tally=on in the request, as Canon's XC spec asks, so a lamp never shows its
+  // previous colour for a moment.
+  for (const id of ['C80-1', 'C80-2']) for (const c of sim.bodies[id].controls.filter((x) => x['f.tally'] === 'on')) assert.deepEqual(Object.keys(c), ['f.tally.mode', 'f.tally'], id);
 
   // The ATEM shows every camera on air for a moment (a key, SuperSource or transition): no lamp moves.
   for (const b of Object.values(sim.bodies)) b.controls = [];
@@ -805,5 +808,35 @@ test('Base ISO keys and the picked camera: Ctrl+W / Ctrl+S step Base ISO, in eit
   await svc.check({ force: true });
   svc.baseIsoSent = {}; // the value sent a moment ago is otherwise stepped from, as the camera's report can lag
   await assert.rejects(svc.stepBaseIso(1, 'C80-2'), /Base ISO is on Auto/);
+  svc.stop();
+});
+
+test('sensor mode: shown and changed where the camera offers it, never on a camera on program; nothing made up where it does not', async () => {
+  // Found by name and by its values, whatever the key is called.
+  assert.deepEqual(sensorControl({ 'c.1.sensor.mode': 's35', 'c.1.sensor.mode.list': 'full,s35,s16' }), { key: 'c.1.sensor.mode', value: 's35', list: ['full', 's35', 's16'] });
+  assert.equal(sensorControl({ 'c.1.imager.area': 'ff', 'c.1.imager.area.list': 'ff,super35' }).key, 'c.1.imager.area');
+  assert.equal(sensorControl({ 'c.1.sensor.cleaning': 'off', 'c.1.sensor.cleaning.list': 'full,s35' }), null, 'not a sensor cleaning setting');
+  assert.equal(sensorControl({ 'c.1.gamma': 'clog2_cgamut', 'c.1.gamma.list': 'clog2_cgamut,canon709_bt709' }), null);
+  assert.equal(sensorControl(goodCamera()), null, 'a C80 as read on 1.0.6.1 reports none');
+  assert.deepEqual(['full', 'ff', 'full_frame', 's35', 'super35', 'crop', 's16'].map(sensorText), ['Full frame', 'Full frame', 'Full frame', 'Super 35', 'Super 35', 'Super 35', 'Super 16']);
+  assert.equal(essentials(goodCamera(SIM_SENSOR('s35')), summarize(goodCamera(SIM_SENSOR('s35'))), {}).sensor, 'Super 35');
+  assert.equal(essentials(goodCamera(), summarize(goodCamera()), {}).sensor, null, 'not reported: nothing shown');
+
+  // Adjust: the camera's own choices; a camera on program is refused.
+  const atem = new FakeAtemLink({ modeName: 'P4KHDp25', modeLabel: '2160p25', inputs: { 1: 'Cam-01', 2: 'Cam-02', 3: 'Cam-03' }, mixEffects: [{ program: 1, preview: 2 }] });
+  const svc = new ShotReadyService(mkdtempSync(join(tmpdir(), 'shotready-')), { defaultConfig: sim.config({ pollSeconds: 3600 }), dupDelayMs: 1, atem });
+  for (const id of ['C80-1', 'C80-2']) sim.bodies[id].info = { ...sim.bodies[id].info, ...SIM_SENSOR('full') };
+  await svc.assignInOrder();
+  await svc.check({ force: true });
+  const ctl = svc.lastResult.labels.find((l) => l.body === 'C80-2').controls.find((c) => c.name === 'Sensor mode');
+  assert.deepEqual(ctl.options.map((o) => o.text), ['Full frame', 'Super 35', 'Super 16']);
+  for (const b of Object.values(sim.bodies)) b.controls = [];
+  await svc.setControl('C80-2', 'sim.sensor.mode', 's35');
+  assert.deepEqual(sim.bodies['C80-2'].controls, [{ 'sim.sensor.mode': 's35' }]);
+  await svc.check({ force: true });
+  assert.equal(svc.lastResult.labels.find((l) => l.body === 'C80-2').essentials.sensor, 'Super 35');
+  await assert.rejects(svc.setControl('C80-1', 'sim.sensor.mode', 's35'), /C80-1 is live: changing its sensor mode would change its picture on air/);
+  assert.deepEqual(sim.bodies['C80-1'].controls, []);
+  assert.equal(svc.lastResult.labels.find((l) => l.body === 'C80-3').controls.some((c) => c.name === 'Sensor mode'), false, 'a camera that does not report it gets no control');
   svc.stop();
 });

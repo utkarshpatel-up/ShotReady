@@ -272,6 +272,7 @@ table.luts select { width: auto; }
 /* ISO above the camera's Base ISO */
 .facts .iso-over { color: var(--red); font-weight: 700; }
 .facts .sdi-bad { color: var(--red); font-weight: 700; }
+.facts .sensor-crop { color: var(--yellow); font-weight: 700; }
 .facts .lvl { white-space: nowrap; }
 .facts dd[data-level] { grid-column: 2 / -1; }
 .facts dt.row-start { grid-column: 1; }

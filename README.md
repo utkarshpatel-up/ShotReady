@@ -309,6 +309,14 @@ Not checked: firmware, sensor mode, lens filter and lens stabilization. The C80 
 for sensor mode or for the lens stabilizer switch (checked with a lens attached), and the other two
 are not wanted.
 
+**Sensor mode** (Full frame or Super 35 crop) is shown on the card beside Iris, with Super 35 in
+yellow, and can be changed in **Adjust**, on a camera that reports it as a setting: ShotReady finds it
+by name (sensor, imager, image area or crop) and by its values, whatever Canon calls it. It is never
+changed on a camera on program, as the picture's framing changes. A C80 on firmware 1.0.6.1 does not
+report it: its card shows nothing, and Adjust says to change it in the camera's own menu, which **M**
+opens from ShotReady (see Camera menu). **Save settings list** (Bodies tab) shows whether a camera or
+firmware reports it.
+
 The key names are under `standards.mandatory` in `cameras.json`:
 
     "mandatory": { "digitalIS": ["c.1.eis"], "baseIso": ["c.1.me.baseiso"], "teleConverter": ["c.1.zoom.mode"] }

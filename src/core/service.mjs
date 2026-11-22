@@ -702,7 +702,9 @@ export class ShotReadyService extends EventEmitter {
       while (this.lampSent[id] !== this.lampWant[id]) {
         const next = this.lampWant[id];
         this.lampAt[id] = Date.now();
-        await this.control(body, next === 'off' ? { 'f.tally': 'off' } : { 'f.tally': 'on', 'f.tally.mode': next });
+        // The mode goes first: Canon's XC spec says f.tally=on before it lights the lamp in its
+        // previous colour for a moment.
+        await this.control(body, next === 'off' ? { 'f.tally': 'off' } : { 'f.tally.mode': next, 'f.tally': 'on' });
         this.lampSent[id] = next;
         this.lampFailed[id] = false;
       }
@@ -1163,6 +1165,8 @@ export class ShotReadyService extends EventEmitter {
     if (key === 'm.onscreen' && value === 'on' && this.isLive(bodyId)) throw new Error(`${bodyId} is live: the on-screen display would show on air`);
     // A new resolution drops the camera's signal for a moment: never on air.
     if (control.name === 'Resolution' && this.isLive(bodyId)) throw new Error(`${bodyId} is live: changing its resolution would drop its picture on air`);
+    // A new sensor mode changes the picture's framing and drops it for a moment: never on air.
+    if (control.name === 'Sensor mode' && this.isLive(bodyId)) throw new Error(`${bodyId} is live: changing its sensor mode would change its picture on air`);
     await this.control(body, { [key]: value });
     this.log('info', `${bodyId}: ${control.name} set to ${option.text}`);
     // The camera pushes the change as well; this covers a camera whose stream is down.

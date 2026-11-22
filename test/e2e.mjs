@@ -192,7 +192,7 @@ try {
   // Adjust one camera from its card.
   await card('C80-1').locator('.adjust-btn').click();
   await win.waitForSelector('.card[data-body="C80-1"] .adjust select');
-  assert.deepEqual(await card('C80-1').locator('.adjust label').evaluateAll((l) => l.map((x) => x.firstChild.textContent)), ['Shutter', 'White balance', 'Kelvin', 'Tint', 'Base ISO', 'ISO', 'ND', 'Iris', 'AF frame', 'OSD']);
+  assert.deepEqual(await card('C80-1').locator('.adjust label').evaluateAll((l) => l.map((x) => x.firstChild.textContent)), ['Shutter', 'White balance', 'Kelvin', 'Tint', 'Base ISO', 'ISO', 'ND', 'Iris', 'AF frame', 'OSD', 'Sensor mode']);
   await card('C80-1').locator('select[aria-label="ISO on C80-1"]').selectOption('1600');
   await win.waitForFunction(() => /1600/.test(document.querySelector('.card[data-body="C80-1"] .facts').textContent), null, { timeout: 8000 });
   await card('C80-1').locator('select[aria-label="Shutter on C80-1"]').selectOption('60');
@@ -261,6 +261,24 @@ try {
   assert.match(await card('C80-6').locator('.facts .sdi-bad').getAttribute('title'), /the ATEM \(2160p25\) needs 3840x2160 25p/);
   assert.equal(await card('C80-2').locator('.facts .sdi-bad').count(), 0);
   ok('card: Base ISO beside ISO, and SDI red when it does not match the ATEM');
+
+  // Sensor mode beside Iris, where the camera reports it: Super 35 stands out; nothing where it does not.
+  const sensorOf = (body) => card(body).locator('.facts').evaluate((f) => { const dt = [...f.querySelectorAll('dt')].find((d) => d.textContent === 'Sensor'); return dt ? [dt.nextElementSibling.textContent, dt.nextElementSibling.className] : null; });
+  assert.deepEqual(await sensorOf('C80-3'), ['Super 35', 'sensor-crop']);
+  assert.deepEqual(await sensorOf('C80-1'), ['Full frame', '']);
+  assert.equal(await sensorOf('C80-2'), null, 'not reported: nothing shown');
+  // Changed from Adjust; a camera that does not report it says where to change it instead.
+  await retry(() => card('C80-3').locator('.adjust-btn').click({ timeout: 2000 }).then(() => true));
+  await win.waitForSelector('.card[data-body="C80-3"] select[aria-label="Sensor mode on C80-3"]', { timeout: 5000 });
+  await card('C80-3').locator('select[aria-label="Sensor mode on C80-3"]').selectOption('full');
+  await win.waitForFunction(() => { const f = document.querySelector('.card[data-body="C80-3"] .facts'); const dt = [...f.querySelectorAll('dt')].find((d) => d.textContent === 'Sensor'); return dt?.nextElementSibling.textContent === 'Full frame'; }, null, { timeout: 8000 });
+  await card('C80-3').locator('select[aria-label="Sensor mode on C80-3"]').selectOption('s35');
+  await win.waitForFunction(() => { const f = document.querySelector('.card[data-body="C80-3"] .facts'); const dt = [...f.querySelectorAll('dt')].find((d) => d.textContent === 'Sensor'); return dt?.nextElementSibling.textContent === 'Super 35'; }, null, { timeout: 8000 });
+  await card('C80-3').locator('.adjust-btn').click();
+  await retry(() => card('C80-2').locator('.adjust-btn').click({ timeout: 2000 }).then(() => true));
+  await win.waitForFunction(() => /Sensor mode: this camera does not report it/.test(document.querySelector('.card[data-body="C80-2"] .adjust')?.textContent || ''), null, { timeout: 5000 });
+  await card('C80-2').locator('.adjust-btn').click();
+  ok('card: sensor mode beside Iris where the camera reports it (Super 35 stands out), changed from Adjust, and a note where it is not reported');
 
   // The electronic level under the picture: a green dot on an axis within 0.5° of level.
   await win.waitForFunction(() => /Roll \+0\.2°\s*·\s*Tilt −1\.4°/.test(document.querySelector('.card[data-body="C80-1"] [data-level]')?.textContent || ''), null, { timeout: 8000 });
