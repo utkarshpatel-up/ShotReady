@@ -280,6 +280,17 @@ try {
   await card('C80-2').locator('.adjust-btn').click();
   ok('card: sensor mode beside Iris where the camera reports it (Super 35 stands out), changed from Adjust, and a note where it is not reported');
 
+  // Picture off on one camera's card: its picture stops (no picture requests), the others run on.
+  await card('C80-4').locator('.feed').hover();
+  await card('C80-4').locator('.fpic').click();
+  await win.waitForFunction(() => { const f = document.querySelector('.card[data-body="C80-4"] .feed'); return f && !f.querySelector('.foff').hidden && !f.querySelector('img').getAttribute('src'); }, null, { timeout: 8000 });
+  assert.match(await card('C80-4').locator('.foff').textContent(), /Picture off/);
+  assert.equal(await card('C80-2').locator('.foff').isHidden(), true, 'one camera only');
+  await win.waitForFunction(() => document.querySelector('.card[data-body="C80-4"] [data-wfm]')?.textContent === '—', null, { timeout: 8000 });
+  await card('C80-4').locator('.foff button', { hasText: 'Turn picture on' }).click();
+  await win.waitForFunction(() => { const f = document.querySelector('.card[data-body="C80-4"] .feed'); return f.querySelector('.foff').hidden && f.querySelector('img').naturalWidth > 0; }, null, { timeout: 10000 });
+  ok('picture off per camera: from its card, the picture stops and its waveform with it, and back on');
+
   // The electronic level under the picture: a green dot on an axis within 0.5° of level.
   await win.waitForFunction(() => /Roll \+0\.2°\s*·\s*Tilt −1\.4°/.test(document.querySelector('.card[data-body="C80-1"] [data-level]')?.textContent || ''), null, { timeout: 8000 });
   assert.equal(await card('C80-1').locator('[data-level] .lvl-ok').count(), 1, 'roll level: one dot');

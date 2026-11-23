@@ -289,11 +289,16 @@ function feedEl(body) {
   const none = h('div', { class: 'fnone' }, 'No video');
   const osd = h('div', { class: 'fosd', hidden: true }, 'OSD IS ON');
   const frame = h('div', { class: 'fframe', hidden: true }, 'AF frame: Auto');
+  // The picture's own switch, to save network bandwidth: off, the camera sends no pictures at all.
+  const picOff = h('button', { class: 'small fpic', title: 'Turn this camera\'s picture off to save network bandwidth. Checks, tally and Adjust keep working', onclick: (e) => { e.stopPropagation(); setPicture(body, false); } }, 'Picture off');
+  const offBox = h('div', { class: 'foff', hidden: true, onclick: (e) => e.stopPropagation() },
+    h('span', {}, 'Picture off'),
+    h('button', { class: 'small', onclick: (e) => { e.stopPropagation(); setPicture(body, true); } }, 'Turn picture on'));
   const wrap = h('div', {
     class: 'feed', role: 'img', 'aria-label': `Live view of ${body}`,
     onclick: (e) => aimFocus(body, e), onmousemove: (e) => hoverFeed(body, e), onmouseleave: () => hoverFeed(body, null),
-  }, img, box, chip, fps, none, osd, frame);
-  f = app.feeds[body] = { wrap, img, box, chip, fps, none, osd, frame, people: [], mouse: null, connected: false };
+  }, img, box, chip, fps, none, osd, frame, picOff, offBox);
+  f = app.feeds[body] = { wrap, img, box, chip, fps, none, osd, frame, picOff, offBox, people: [], mouse: null, connected: false };
   img.addEventListener('error', () => {
     if (!f.connected) return;
     f.connected = false;
@@ -403,6 +408,16 @@ function lutButton(c) {
   }, 'LUT');
 }
 
+// A camera's picture switched on or off from its card. Shown at once; ShotReady stops or starts the
+// camera's frames.
+function setPicture(body, on) {
+  const c = cardOf(body);
+  if (c) c.pictureOff = !on;
+  connectFeed(body);
+  paintFeed(body);
+  act(() => call('setPicture', body, on));
+}
+
 // A picture keeps running on every tab, so it is already there when the Dashboard comes back.
 function connectFeed(body) {
   const f = app.feeds[body];
@@ -410,7 +425,7 @@ function connectFeed(body) {
   // A short drop does not disconnect the picture: only 15 seconds of the camera not answering does.
   const online = !!cardOf(body)?.online;
   if (online) f.lastOnline = Date.now();
-  const want = online || ((f.connected || f.lut) && Date.now() - (f.lastOnline || 0) < 15000);
+  const want = !cardOf(body)?.pictureOff && (online || ((f.connected || f.lut) && Date.now() - (f.lastOnline || 0) < 15000));
   const lut = want ? lutFor(body) : null;
   if (lut) { showLut(f, body, lut); return; }
   stopLut(f);
@@ -438,7 +453,12 @@ function paintFeed(body) {
   // picture for as long as it applies, instead of in a message on every click.
   f.frame.hidden = !(online && c.focusFrame?.auto);
   f.frame.title = c?.focusFrame?.why || '';
-  f.none.hidden = online;
+  const off = !!c?.pictureOff;
+  f.none.hidden = online || off;
+  f.offBox.hidden = !off;
+  f.picOff.hidden = off || !online;
+  f.wrap.classList.toggle('pic-off', off);
+  if (off) f.fps.textContent = '';
   paintPeople(body);
   // The camera's display goes out on its outputs, so say so over the picture.
   f.osd.hidden = !(online && c.controls?.find((k) => k.key === 'm.onscreen')?.value === 'on');

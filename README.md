@@ -350,6 +350,12 @@ network: 1 or 2 cameras get 4 overlapping requests each (the most the C80 handle
 3 or 4 cameras get 2, and 5 or more get 1. Set `liveViewParallel` (1 to 4) in `cameras.json` to
 force a number. A wired connection matters: over a jittery Wi-Fi link the rate drops a lot.
 
+**Picture off, per camera:** hover over a camera's picture and click **Picture off** to save network
+bandwidth. That camera then sends no pictures at all: none to the Dashboard or to phones, no slow
+frames for the waveform (its WFM and RGB show —) and no focus box. Its settings, checks, tally and
+Adjust keep working. **Turn picture on** brings it back. Each camera keeps its choice between runs, and
+with fewer pictures on, the others get more overlapping requests.
+
 The box over the picture is the camera's focus guide (`meta.cgi`): **green** when the camera reports
 level 2 (in focus), **red** below that, with "front focus" or "back focus" in the corner. When the
 camera sends no focus guide, no box is shown and the corner says "Focus not detected".

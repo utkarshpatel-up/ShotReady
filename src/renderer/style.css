@@ -141,6 +141,13 @@ td.mono { font-family: Consolas, monospace; font-size: 12.5px; }
 .ffps.bad { color: var(--red); }
 .fnone { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dim); }
 .fnone[hidden] { display: none; }
+/* A camera's own picture switch: shown over the picture on hover; off, the picture area says so. */
+.feed .fpic { position: absolute; left: 6px; top: 5px; font-size: 11px; padding: 1px 7px; background: #000b; border-color: #0000; opacity: 0; transition: opacity .15s; }
+.feed:hover .fpic, .feed .fpic:focus-visible { opacity: 1; }
+.feed .fpic[hidden] { display: none; }
+.foff { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center; color: var(--dim); background: #0b0c0e; cursor: default; }
+.foff[hidden] { display: none; }
+.feed.pic-off .fbox, .feed.pic-off .fchip, .feed.pic-off .fframe, .feed.pic-off .fperson { display: none; }
 button.chip { width: 100%; text-align: left; font-size: 12.5px; font-weight: 600; white-space: pre; }
 button.chip.red { color: var(--red); }
 button.chip.yellow { color: var(--yellow); }

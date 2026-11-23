@@ -29,7 +29,7 @@ export function mobileView({ result, atem = {}, focus = {}, waves = {} }) {
     const sdiBad = results.find((r) => r.check === 'SDI output' && r.status === 'red');
     const w = waves[c.body];
     return {
-      label: spare ? null : c.label, body: c.body || null, online: !!c.online, spare: !!spare,
+      label: spare ? null : c.label, body: c.body || null, online: !!c.online, spare: !!spare, pictureOff: !!c.pictureOff,
       program: !!c.tally?.program?.length, preview: !!c.tally?.preview?.length,
       model: s?.model || null, lens: s?.lens ? shortLens(s.lens) : null, gamma: s?.gamma || null,
       sdi: s ? fmtVideo(s.output) : null, sdiBad: sdiBad ? sdiBad.detail : null,

@@ -130,9 +130,10 @@ function fillCard(c, cam) {
 // the large view is closed.
 function updatePic(c) {
   const cam = c.cam;
-  const want = cam && cam.body && cam.online && ui.rate > 0 && ui.visible.has(c.key) && !document.hidden && !ui.big;
+  const want = cam && cam.body && cam.online && !cam.pictureOff && ui.rate > 0 && ui.visible.has(c.key) && !document.hidden && !ui.big;
   if (!cam?.body) { c.none.textContent = 'No camera'; c.none.hidden = false; }
   else if (!cam.online) { c.none.textContent = 'Offline'; c.none.hidden = false; }
+  else if (cam.pictureOff) { c.none.textContent = 'Picture off on ShotReady'; c.none.hidden = false; }
   else if (ui.rate === 0) { c.none.textContent = 'Pictures off'; c.none.hidden = false; }
   if (want && c.src !== `${cam.body}@${ui.rate}`) {
     c.src = `${cam.body}@${ui.rate}`;
@@ -236,10 +237,10 @@ function paintBig() {
   tag.textContent = cam.program ? 'PGM' : cam.preview ? 'PVW' : '';
   tag.hidden = !cam.program && !cam.preview;
   $('big-facts').replaceChildren(...facts(cam), ...[levelLine(cam), checksLine(cam)].filter(Boolean));
-  const src = `${cam.body}@${cam.online}`;
+  const src = `${cam.body}@${cam.online && !cam.pictureOff}`;
   if (ui.bigSrc !== src) {
     ui.bigSrc = src;
-    $('big-img').src = cam.online && !document.hidden ? feedUrl(cam.body, BIG_FPS) : BLANK;
+    $('big-img').src = cam.online && !cam.pictureOff && !document.hidden ? feedUrl(cam.body, BIG_FPS) : BLANK;
   }
 }
 

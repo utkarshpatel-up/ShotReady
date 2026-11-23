@@ -361,6 +361,7 @@ export class ShotReadyService extends EventEmitter {
         ref: ref ? { fromBody: ref.fromBody, time: ref.time } : null, diffCount,
         essentials: rb.error ? null : essentials(rb.info, rb.summary, this.std),
         controls: rb.error ? null : cameraControls(rb.info),
+        pictureOff: this.pictureOff(id),
         sdi: rb.error ? null : { now: fmtVideo(rb.summary?.output), want: fmtVideo(target.sdi), settable: !!resolutionControl(rb.info) },
         record: rb.error ? null : recordState(rb.info),
         focusDrive: rb.error ? null : focusDrive(rb.info),
@@ -377,7 +378,7 @@ export class ShotReadyService extends EventEmitter {
       // Shown on the card so a spare can be readied, but not counted until it is on a label.
       const known = this.state.bodies[rb.body.id] || {};
       const checks = rb.error ? [] : [...checkCamera(rb.summary, {}, checkProfile, std), ...mandatoryChecks(rb.info, rb.summary, this.std, known.confirmed)];
-      spares.push({ body: rb.body.id, ip: rb.body.ip, online: !rb.error, summary: rb.summary || null, results, checks, spare: true, essentials: rb.error ? null : essentials(rb.info, rb.summary, this.std), controls: rb.error ? null : cameraControls(rb.info), sdi: rb.error ? null : { now: fmtVideo(rb.summary?.output), want: fmtVideo(target.sdi), settable: !!resolutionControl(rb.info) }, record: rb.error ? null : recordState(rb.info), focusDrive: rb.error ? null : focusDrive(rb.info), focusFrame: rb.error ? null : focusFrame(rb.info), oneShot: rb.error ? null : okWhy(oneShotAf(rb.info)) });
+      spares.push({ body: rb.body.id, ip: rb.body.ip, online: !rb.error, summary: rb.summary || null, results, checks, spare: true, essentials: rb.error ? null : essentials(rb.info, rb.summary, this.std), controls: rb.error ? null : cameraControls(rb.info), pictureOff: this.pictureOff(rb.body.id), sdi: rb.error ? null : { now: fmtVideo(rb.summary?.output), want: fmtVideo(target.sdi), settable: !!resolutionControl(rb.info) }, record: rb.error ? null : recordState(rb.info), focusDrive: rb.error ? null : focusDrive(rb.info), focusFrame: rb.error ? null : focusFrame(rb.info), oneShot: rb.error ? null : okWhy(oneShotAf(rb.info)) });
     }
 
     for (const c of [...labels, ...spares]) {
@@ -497,8 +498,9 @@ export class ShotReadyService extends EventEmitter {
       this.cams[body.id] = new CameraThread(body.id, { url: this.frameUrl(body), auth: this.authForRequests() }, {
         viewers: (n) => this.onViewers(body.id, n),
         state: (state) => { if (state === 'down') this.setWave(body.id, null); },
-        level: (wave) => this.setWave(body.id, wave),
-        wave: (jpeg) => this.measureWave(body.id, jpeg),
+        // A frame still on its way when the picture is switched off is not measured.
+        level: (wave) => { if (!this.pictureOff(body.id)) this.setWave(body.id, wave); },
+        wave: (jpeg) => { if (!this.pictureOff(body.id)) this.measureWave(body.id, jpeg); },
         note: (text) => this.log('info', `${body.id}: ${text}`),
         stats: (frames) => { if (this.viewers[body.id] > 0) this.emit('feedstat', { body: body.id, fps: frames }); },
         failed: (message) => this.log('red', `${body.id}: video thread stopped (${message})`),
@@ -529,9 +531,25 @@ export class ShotReadyService extends EventEmitter {
 
   // The more cameras are watched, the fewer overlapping requests each one gets, so 8 live
   // pictures do not swamp the network or the cameras. liveViewParallel (1 to 4) overrides it.
+  // A camera's picture switched off on its card (to save network bandwidth): kept between runs.
+  pictureOff(id) { return !!this.state.picturesOff?.[id]; }
+
+  setPicture(id, on) {
+    if (!this.findBody(id)) throw new Error(`Unknown body "${id}"`);
+    const off = { ...this.state.picturesOff };
+    if (on) delete off[id]; else off[id] = true;
+    this.state.picturesOff = off;
+    this.saveStateSoon();
+    if (!on) this.setWave(id, null);
+    this.applyViewing();
+    this.log('info', `${id}: picture ${on ? 'on' : 'off'}`);
+    this.scheduleEvaluate();
+    return !on;
+  }
+
   applyViewing() {
     if (!this.framesOn) return;
-    const watched = Object.keys(this.viewers).filter((id) => this.viewers[id] > 0);
+    const watched = Object.keys(this.viewers).filter((id) => this.viewers[id] > 0 && !this.pictureOff(id));
     const fixed = Number(this.cfg.liveViewParallel);
     // 8 overlapping requests to share between the watched cameras, at most 4 each (more than 4
     // made the C80 return errors): 1 or 2 cameras get 4, 3 or 4 get 2, 5 or more get 1.
@@ -541,9 +559,12 @@ export class ShotReadyService extends EventEmitter {
     const idle = measure ? { parallel: 1, intervalMs: this.cfg.waveformMs, waveGap: this.cfg.waveformMs } : { parallel: 0, intervalMs: 0, waveGap: 0 };
     // Waveform from the same frames: quicker while someone is watching.
     const live = { parallel, intervalMs: 0, waveGap: measure ? 250 : 0 };
-    for (const [id, cam] of Object.entries(this.cams)) cam.setMode(this.viewers[id] > 0 ? live : idle);
+    // A camera whose picture is switched off sends nothing at all: no live frames, no slow frames for
+    // the waveform, no focus data. Only its settings are read, as for any camera.
+    const none = { parallel: 0, intervalMs: 0, waveGap: 0 };
+    for (const [id, cam] of Object.entries(this.cams)) cam.setMode(this.pictureOff(id) ? none : this.viewers[id] > 0 ? live : idle);
     for (const body of this.cfg.bodies) {
-      const want = this.viewers[body.id] > 0;
+      const want = this.viewers[body.id] > 0 && !this.pictureOff(body.id);
       if (want && !this.focusStreams[body.id]) this.startFocus(body);
       else if (!want && this.focusStreams[body.id]) this.stopFocus(body.id);
     }

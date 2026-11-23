@@ -138,6 +138,41 @@ test('live view: watching a camera starts frames and focus, and leaving stops th
   } finally { svc.stop(); }
 });
 
+test('picture off per camera: no frames at all, even with someone watching, kept between runs, and back on', async () => {
+  const cam = sim.bodies['C80-1'];
+  cam.frame = () => Buffer.from([0xff, 0xd8, 0, 0xff, 0xd9]);
+  const dir = mkdtempSync(join(tmpdir(), 'shotready-'));
+  const make = () => new ShotReadyService(dir, { defaultConfig: sim.config({ pollSeconds: 3600 }), dupDelayMs: 1, waveform: true });
+  let svc = make();
+  try {
+    await svc.assignInOrder();
+    svc.startLive();
+    await svc.check({ force: true });
+    const { 'C80-1': base } = await svc.feedBase();
+    assert.ok(await until(() => svc.cams['C80-1'].mode.parallel === 1), 'nobody watching: slow frames for the waveform');
+    const u = new URL(`${base}/C80-1.mjpeg`);
+    const viewer = http.get({ host: u.hostname, port: u.port, path: u.pathname }, (res) => res.resume());
+    assert.ok(await until(() => svc.cams['C80-1'].mode.parallel === 4 && cam.metaSubs.size === 1), 'watched: live');
+    // Off: nothing at all, though the viewer is still connected (the phone view, for one).
+    assert.equal(svc.setPicture('C80-1', false), true);
+    assert.ok(await until(() => svc.cams['C80-1'].mode.parallel === 0 && cam.metaSubs.size === 0), 'off: no frames, no focus data');
+    assert.equal(svc.waves['C80-1'], undefined, 'no waveform reading left over');
+    await svc.check({ force: true });
+    assert.equal(svc.lastResult.labels.find((l) => l.body === 'C80-1').pictureOff, true);
+    assert.equal(svc.lastResult.labels.find((l) => l.body === 'C80-2').pictureOff, false, 'one camera only');
+    viewer.destroy();
+    svc.stop();
+    svc = make(); // kept between runs
+    svc.startLive();
+    await svc.check({ force: true });
+    assert.equal(svc.lastResult.labels.find((l) => l.body === 'C80-1').pictureOff, true);
+    assert.equal(svc.cams['C80-1'].mode.parallel, 0);
+    svc.setPicture('C80-1', true);
+    assert.ok(await until(() => svc.cams['C80-1'].mode.parallel === 1), 'back on: the waveform frames again');
+    await assert.rejects(async () => svc.setPicture('C99-9', false), /Unknown body/);
+  } finally { svc.stop(); }
+});
+
 // 6. 1-Shot AF is control.cgi?c.1.focus.action=one_shot, sent whenever the lens is on AF. Continuous AF
 // is c.1.focus=auto AND c.1.focus.auto=continuous, so focus=auto alone must not block anything.
 test('1-Shot AF: sent whenever the lens is on AF, judged on what the camera says at the press', async () => {
