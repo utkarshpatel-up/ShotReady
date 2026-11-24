@@ -2,7 +2,6 @@
 // focus guide: a box position and how close to focus it is. GET only.
 import { httpGet } from './http.mjs';
 import { decodeMsgpack, decodeMsgpackPrefix } from './msgpack.mjs';
-import { levelIn } from './engine.mjs';
 
 const clamp = (n) => Math.max(0, Math.min(1, n));
 
@@ -13,11 +12,7 @@ const clamp = (n) => Math.max(0, Math.min(1, n));
 export function normalizeFocus(meta) {
   const g = Array.isArray(meta?.fguide) ? meta.fguide[0] : null;
   const found = people(meta);
-  // The electronic level, when the camera puts it in its metadata. Without fguide/detect, so a
-  // focus guide's own level (how close to focus) is never taken for it.
-  const { fguide, detect, ...rest } = meta || {};
-  const tiltRoll = levelIn(rest);
-  if (!g || !g.status || !g.pos) return { guide: false, focused: null, level: null, angle: null, dir: null, box: null, people: found, tiltRoll };
+  if (!g || !g.status || !g.pos) return { guide: false, focused: null, level: null, angle: null, dir: null, box: null, people: found };
   const { x, y, w, h } = g.pos;
   const left = clamp((x - w / 2) / 10000), top = clamp((y - h / 2) / 10000);
   return {
@@ -28,7 +23,6 @@ export function normalizeFocus(meta) {
     dir: g.dir,
     box: { x: left, y: top, w: Math.min(w / 10000, 1 - left), h: Math.min(h / 10000, 1 - top) },
     people: found,
-    tiltRoll,
   };
 }
 

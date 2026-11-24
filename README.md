@@ -203,15 +203,6 @@ The link carries a key, kept between runs: anyone with the link can watch. **New
 and phones with the old link stop working. **Phone view on** turns it off. Settings shows how many
 phones are watching.
 
-## Level
-
-Under each camera's picture, **Level** shows the camera's electronic level: **Roll** (the horizon's
-slope) and **Tilt** (pointing up or down), in degrees, live. An axis within 0.5° of level gets a small
-green dot, like the camera's bubble turning green; otherwise it is plain text. A camera that does not
-report its level shows —. Canon's names for these readings are not known yet: ShotReady looks for any
-setting or metadata field named roll, tilt or pitch. **Save settings list** (Bodies tab) now also saves a
-sample of the camera's metadata, so the file shows whether and where a camera reports its level.
-
 ## Keyboard
 
 With the ShotReady window in front, **W** raises and **S** lowers ISO by one step, **D** raises and
@@ -598,8 +589,8 @@ encoder, the stream goes out without sound and says so: check with the test befo
     npm run watch -- 192.168.8.10
 
 Prints each setting the camera pushes as it changes. Change something on the camera to see its key.
-From the app, **Save settings list** on the Bodies tab saves every setting a camera reports to the
-reports folder.
+From the app, **Save settings list** on the Bodies tab saves every setting a camera reports, and a
+sample of its live metadata, to the reports folder.
 
 ## Data
 

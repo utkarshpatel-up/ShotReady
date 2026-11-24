@@ -18,7 +18,6 @@ function el(tag, cls, text) {
   if (text !== undefined && text !== null) e.textContent = text;
   return e;
 }
-const signed = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}°`;
 const keyOf = (c) => c.body || `label:${c.label}`;
 const feedUrl = (body, fps) => `feed/${encodeURIComponent(body)}.mjpeg?fps=${fps}&t=${Date.now()}`;
 
@@ -46,22 +45,9 @@ function facts(c) {
   return out;
 }
 
-function levelLine(c) {
-  const line = el('div', 'line');
-  const l = c.level;
-  const parts = [];
-  if (l) {
-    for (const [name, v] of [['Roll', l.roll], ['Tilt', l.tilt]]) {
-      if (v === null || v === undefined) continue;
-      const s = el('span');
-      if (Math.abs(v) <= 0.5) s.append(el('i', 'dot'));
-      s.append(`${name} ${signed(v)}`);
-      parts.push(s);
-    }
-  }
-  if (c.wfm) parts.push(el('span', '', `WFM ${c.wfm.peak}% avg ${c.wfm.avg}%`));
-  parts.forEach((p, i) => { if (i) line.append('  ·  '); line.append(p); });
-  return parts.length ? line : null;
+function wfmLine(c) {
+  if (!c.wfm) return null;
+  return el('div', 'line', `WFM ${c.wfm.peak}% avg ${c.wfm.avg}%`);
 }
 
 function checksLine(c) {
@@ -122,7 +108,7 @@ function fillCard(c, cam) {
   c.focus.className = `focus ${cam.focus || ''}`;
   c.focus.textContent = cam.focus === 'in' ? 'IN FOCUS' : cam.focus === 'out' ? 'OUT OF FOCUS' : '';
   c.factsBox.replaceChildren(...facts(cam));
-  c.extra.replaceChildren(...[levelLine(cam), checksLine(cam)].filter(Boolean));
+  c.extra.replaceChildren(...[wfmLine(cam), checksLine(cam)].filter(Boolean));
   updatePic(c);
 }
 
@@ -236,7 +222,7 @@ function paintBig() {
   tag.className = `tag ${cam.program ? 'pgm' : cam.preview ? 'pvw' : ''}`;
   tag.textContent = cam.program ? 'PGM' : cam.preview ? 'PVW' : '';
   tag.hidden = !cam.program && !cam.preview;
-  $('big-facts').replaceChildren(...facts(cam), ...[levelLine(cam), checksLine(cam)].filter(Boolean));
+  $('big-facts').replaceChildren(...facts(cam), ...[wfmLine(cam), checksLine(cam)].filter(Boolean));
   const src = `${cam.body}@${cam.online && !cam.pictureOff}`;
   if (ui.bigSrc !== src) {
     ui.bigSrc = src;

@@ -807,24 +807,6 @@ function macroKey(e) {
   });
 }
 
-// The camera's electronic level: roll and tilt in degrees, live from its metadata (or its settings).
-// Within LEVEL_OK of level an axis gets a small green dot, like the camera's bubble turning green;
-// otherwise it is plain text, so a slight slope does not shout.
-const LEVEL_OK = 0.5;
-const LEVEL_TIP = `The camera's electronic level. Roll: the horizon's slope; Tilt: pointing up or down. A green dot means within ${LEVEL_OK}° of level.`;
-function levelParts(body) {
-  const l = app.focus[body]?.tiltRoll || cardOf(body)?.essentials?.level;
-  if (!l) return [h('span', { class: 'empty', title: 'This camera does not report its electronic level' }, '—')];
-  const axis = (name, v) => (v === null || v === undefined ? null : h('span', { class: 'lvl' },
-    Math.abs(v) <= LEVEL_OK ? h('i', { class: 'lvl-ok', title: `${name} level` }) : null,
-    `${name} ${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}°`));
-  const parts = [axis('Roll', l.roll), axis('Tilt', l.tilt)].filter(Boolean);
-  return parts.flatMap((p, i) => (i ? ['  ·  ', p] : [p]));
-}
-function paintLevel(body) {
-  for (const d of document.querySelectorAll('[data-level]')) if (d.dataset.level === body) d.replaceChildren(...levelParts(body));
-}
-
 async function setRec(body, on) {
   await act(() => call('setRecord', body, on));
   refreshLive();
@@ -906,8 +888,7 @@ function card(c) {
       // Sensor mode, beside Iris, only where the camera reports it. Super 35 stands out: it crops the
       // picture and changes every lens's field of view.
       ...(c.essentials?.sensor ? [h('dt', { title: 'The sensor mode: Full frame, or a Super 35 crop' }, 'Sensor'),
-        h('dd', { class: c.essentials.sensor === 'Super 35' ? 'sensor-crop' : '', title: c.essentials.sensor === 'Super 35' ? 'Super 35 crop: the picture is cropped from the middle of the sensor' : 'Full frame' }, c.essentials.sensor)] : []),
-      h('dt', { class: 'row-start', title: LEVEL_TIP }, 'Level'), h('dd', { 'data-level': c.body }, ...levelParts(c.body))) : null,
+        h('dd', { class: c.essentials.sensor === 'Super 35' ? 'sensor-crop' : '', title: c.essentials.sensor === 'Super 35' ? 'Super 35 crop: the picture is cropped from the middle of the sensor' : 'Full frame' }, c.essentials.sensor)] : [])) : null,
     c.spare ? h('div', { class: 'spare-note' }, c.online ? 'Spare: not counted in the verdict until it has a label.' : 'Spare and offline.') : null,
     c.online && c.controls?.length && app.adjust.has(c.body) ? adjustPanel(c) : null,
     h('div', { class: 'card-actions' },
@@ -1921,7 +1902,6 @@ async function start() {
   api.on('focus', ({ body, focus }) => {
     if (focus) app.focus[body] = focus; else delete app.focus[body];
     paintFeed(body);
-    paintLevel(body);
   });
   api.on('feedstat', ({ body, fps, mbps }) => {
     const f = app.feeds[body];

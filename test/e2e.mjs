@@ -332,15 +332,9 @@ try {
   await win.waitForFunction(() => { const f = document.querySelector('.card[data-body="C80-2"] .feed'); return !f.classList.contains('ip') && !f.querySelector('canvas.flut') && f.querySelector('img').naturalWidth > 0; }, null, { timeout: 15000 });
   ok('IP video: ticked in Settings, the camera\'s stream is decoded on its card and reported, WFM 4 times a second, tap focus and 1-Shot AF work; unticked, single pictures again');
 
-  // The electronic level under the picture: a green dot on an axis within 0.5° of level.
-  await win.waitForFunction(() => /Roll \+0\.2°\s*·\s*Tilt −1\.4°/.test(document.querySelector('.card[data-body="C80-1"] [data-level]')?.textContent || ''), null, { timeout: 8000 });
-  assert.equal(await card('C80-1').locator('[data-level] .lvl-ok').count(), 1, 'roll level: one dot');
-  assert.match(await card('C80-2').locator('[data-level]').textContent(), /Roll \+2\.6°\s*·\s*Tilt \+0\.3°/);
-  assert.equal(await card('C80-2').locator('[data-level] .lvl').first().locator('.lvl-ok').count(), 0, 'roll 2.6° has no dot');
-  assert.equal((await card('C80-3').locator('[data-level]').textContent()).trim(), '—');
   // Iris under the picture, without opening Adjust (C80-2 has an F2 lens set to F2).
   assert.match(await card('C80-2').locator('.facts').textContent(), /Iris\s*F2(?![.\d])/);
-  ok('card: the electronic level, with a green dot when level, and the iris');
+  ok('card: the iris under the picture, without opening Adjust');
 
   // A camera on program and preview at once: the label dropdown keeps its width, the tags stack.
   const sel = await retry(async () => {

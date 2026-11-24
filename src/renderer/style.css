@@ -283,10 +283,7 @@ table.luts select { width: auto; }
 .facts .iso-over { color: var(--red); font-weight: 700; }
 .facts .sdi-bad { color: var(--red); font-weight: 700; }
 .facts .sensor-crop { color: var(--yellow); font-weight: 700; }
-.facts .lvl { white-space: nowrap; }
-.facts dd[data-level] { grid-column: 2 / -1; }
 .facts dt.row-start { grid-column: 1; }
-.facts .lvl-ok { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); margin-right: 4px; vertical-align: 1px; }
 .laptop-row { display: flex; align-items: center; gap: 10px; margin: 10px 0; flex-wrap: wrap; }
 .laptop-row input { width: 90px; }
 .laptop-row .hint { margin: 0; }

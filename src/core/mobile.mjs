@@ -37,7 +37,6 @@ export function mobileView({ result, atem = {}, focus = {}, waves = {} }) {
       shutter: e?.shutter ?? null, shutterBad: !!e?.shutterBad, iris: e?.aperture ?? null,
       wb: e?.wb ?? null, digitalIS: e?.digitalIS ?? null, sensor: e?.sensor ?? null,
       focus: f?.guide ? (f.focused ? 'in' : 'out') : null,
-      level: f?.tiltRoll || e?.level || null,
       wfm: w ? { peak: w.peak, avg: w.avg } : null,
       reds: named('red'), yellows: named('yellow'),
     };

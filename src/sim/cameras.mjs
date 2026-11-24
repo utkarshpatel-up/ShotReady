@@ -37,11 +37,10 @@ export const SIM_SENSOR = (mode) => ({ 'sim.sensor.mode': mode, 'sim.sensor.mode
 
 export function demoBodies() {
   return [
-    // An electronic level in the metadata (the field name is the simulator's own): C80-1 level, C80-2 not.
     // A sensor mode setting (also the simulator's own name; a real C80 on 1.0.6.1 reports none):
     // C80-1 on Full frame, C80-3 on a Super 35 crop, the others not reporting it.
-    { id: 'C80-1', info: goodCamera({ 's.hardware.address': mac(1), ...SIM_SENSOR('full') }), level: { roll: 0.2, tilt: -1.4 } },
-    { id: 'C80-2', info: goodCamera({ 's.hardware.address': mac(2), 'c.1.lens.name': 'RF24-70mm F2 L IS USM', 'c.1.me.diaphragm': '200' }), level: { roll: 2.6, tilt: 0.3 } },
+    { id: 'C80-1', info: goodCamera({ 's.hardware.address': mac(1), ...SIM_SENSOR('full') }) },
+    { id: 'C80-2', info: goodCamera({ 's.hardware.address': mac(2), 'c.1.lens.name': 'RF24-70mm F2 L IS USM', 'c.1.me.diaphragm': '200' }) },
     { id: 'C80-3', info: goodCamera({ 's.hardware.address': mac(3), 'c.1.gamma': 'canon709_bt709', 'c.1.lens.name': 'RF24-105mm F4 L IS USM', ...SIM_SENSOR('s35') }) },
     { id: 'C80-4', info: goodCamera({ 's.hardware.address': mac(4), 'c.1.lens.focus': 'mf', 'f.rec.media1.status': 'unrecordable', 'f.rec.media1.remainingtime': '0', 'f.rec.media2.status': 'unrecordable', 'f.rec.media2.remainingtime': '0', 'f.timecode.frame': 'df' }) },
     { id: 'C80-5', info: goodCamera({ 's.hardware.address': mac(5), 'c.1.wb.kelvin': '4300', 'f.rec.media2.status': 'unrecordable', 'f.rec.media2.remainingtime': '0', 'c.1.focus': 'auto', 'c.1.focus.auto': 'continuous', 'c.1.lens.focus': 'mf', 'c.1.focus.detect': 'off', 'c.1.me.iso': '6400', 'c.1.me.diaphragm': '400' }) },
@@ -77,13 +76,9 @@ export async function startSimulator(bodies, infoPath = '/-wvhttp-01-/info.cgi')
       },
       // What the camera's focus guide reports. null means no focus guide (auto focus).
       // detect: the people the camera's subject detection has found; track marks the one it follows.
-      metaDoc: () => ({ version: '3.0.0', timestamp: '1.000', realtime: '1.000', detect: entry.detect, fguide: entry.focus ? [entry.focus] : [], ...(entry.level ? { elevel: entry.level } : {}) }),
+      metaDoc: () => ({ version: '3.0.0', timestamp: '1.000', realtime: '1.000', detect: entry.detect, fguide: entry.focus ? [entry.focus] : [] }),
       setFocus(focus) {
         entry.focus = focus;
-        for (const res of entry.metaSubs) res.write(encodeMsgpack(entry.metaDoc()));
-      },
-      setLevel(level) {
-        entry.level = level;
         for (const res of entry.metaSubs) res.write(encodeMsgpack(entry.metaDoc()));
       },
     };

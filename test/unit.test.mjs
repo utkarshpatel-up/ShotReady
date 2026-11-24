@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ShotReadyService } from '../src/core/service.mjs';
 import dgram from 'node:dgram';
-import { checkCamera, summarize, PROFILES, DEFAULT_STANDARDS, mandatoryChecks, oneShotAf, continuousAf, copyPlan, digitalIsPlan, cameraControls, atemVideoFormat, resolutionControl, resolutionFor, levelIn, sensorControl, sensorText, essentials, powerOf } from '../src/core/engine.mjs';
+import { checkCamera, summarize, PROFILES, DEFAULT_STANDARDS, mandatoryChecks, oneShotAf, continuousAf, copyPlan, digitalIsPlan, cameraControls, atemVideoFormat, resolutionControl, resolutionFor, sensorControl, sensorText, essentials, powerOf } from '../src/core/engine.mjs';
 import { findAtems, parseDns, atemsInAnswer, sweepTargets, mdnsQuery } from '../src/core/atem-discovery.mjs';
 import { decodeJpeg } from '../src/core/jpeg.mjs';
 import { parseCube, rangesFromName } from '../src/core/cube.mjs';
@@ -508,18 +508,6 @@ test('copy settings, ISO above Base ISO, saturation and the settings list', asyn
   assert.match(readFileSync(path, 'utf8'), /# metadata \(meta\.cgi, one sample\)\r\n[^#]*version=3\.0\.0/, 'a metadata sample is saved too');
 });
 
-test('electronic level: roll and tilt found by name, in settings or metadata, never a focus level', () => {
-  assert.deepEqual(levelIn({ elevel: { roll: 0.24, tilt: -1.36 } }), { roll: 0.2, tilt: -1.4 });
-  assert.deepEqual(levelIn({ 'c.1.gyro.roll': '3.05', 'c.1.gyro.pitch': '-0.5', 'c.1.blacklevel': '0' }), { roll: 3.1, tilt: -0.5 });
-  assert.deepEqual(levelIn({ a: { b: { roll: 1 } } }), { roll: 1, tilt: null });
-  assert.equal(levelIn({ 'c.1.blacklevel': '0', 'c.1.gamma': 'clog2_cgamut' }), null);
-  assert.equal(levelIn({ roll: '' }), null);
-  const g = { status: 1, level: 2, pos: { x: 5000, y: 5000, w: 1000, h: 1000 } };
-  assert.equal(normalizeFocus({ fguide: [g] }).tiltRoll, null, 'the focus guide\'s level is not a tilt');
-  assert.deepEqual(normalizeFocus({ fguide: [g], elevel: { roll: 0, tilt: 2 } }).tiltRoll, { roll: 0, tilt: 2 });
-  assert.deepEqual(normalizeFocus({ elevel: { roll: 0, tilt: 2 } }).tiltRoll, { roll: 0, tilt: 2 }, 'also with no focus guide');
-});
-
 // 17. Pre-processing's MP4 files: what is written reads back the same, the sound's description is kept
 // as it was, and the codec strings WebCodecs needs come out right; a real clip is read too.
 test('MP4: written and read back the same, sound kept, codec strings right', async () => {
@@ -679,12 +667,12 @@ test('phone view: the key is required, the essentials are sent live, pictures ar
     ],
     spares: [{ body: 'C50-8', online: true, summary: { model: 'EOS C50', lens: 'RF28-70mm F2 L USM', output: '3840x2160:25000:P' }, essentials: {}, results: [] }, { body: 'C80-9', online: false }],
   };
-  const v = mobileView({ result, atem: { connected: true, modeLabel: '2160p25' }, focus: { 'C80-1': { guide: true, focused: false, tiltRoll: { roll: 0.2, tilt: -1 } } }, waves: { 'C80-1': { peak: 100, avg: 30 } } });
+  const v = mobileView({ result, atem: { connected: true, modeLabel: '2160p25' }, focus: { 'C80-1': { guide: true, focused: false } }, waves: { 'C80-1': { peak: 100, avg: 30 } } });
   assert.deepEqual(v.cams.map((c) => [c.label, c.body, c.spare]), [['Cam-01', 'C80-1', false], ['Cam-02', null, false], [null, 'C50-8', true]], 'labels, then the spares that are online');
   const c1 = v.cams[0];
   assert.deepEqual([c1.program, c1.preview, c1.iso, c1.isoOver, c1.baseIso, c1.iris, c1.sdi, c1.focus, c1.lens], [true, false, '6400', true, 3200, 'F2.8', '1920x1080 25p', 'out', 'RF70-200mm F2.8']);
   assert.match(c1.sdiBad, /needs 3840x2160/);
-  assert.deepEqual([c1.reds, c1.level, c1.wfm], [['SDI output'], { roll: 0.2, tilt: -1 }, { peak: 100, avg: 30 }]);
+  assert.deepEqual([c1.reds, c1.wfm], [['SDI output'], { peak: 100, avg: 30 }]);
 
   // The splitter puts parts back together across any chunking.
   const feed = new FeedServer();
