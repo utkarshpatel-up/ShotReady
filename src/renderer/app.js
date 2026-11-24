@@ -418,10 +418,74 @@ function setPicture(body, on) {
   act(() => call('setPicture', body, on));
 }
 
+// The camera's own IP video (Settings > IP video), decoded and drawn in a thread of this window by
+// the same worker as the LUT view (lut-worker.js), through the LUT when the LUT button is on. If this
+// computer cannot decode it, the card goes back to single pictures and says why, once.
+function showIp(f, body, lut) {
+  if (!f.ip) {
+    try {
+      const canvas = h('canvas', { class: 'flut' });
+      const offscreen = canvas.transferControlToOffscreen();
+      const worker = new Worker('lut-worker.js');
+      const ip = { canvas, worker, key: null, drawing: false, waiting: false };
+      worker.onmessage = (e) => {
+        if (f.ip !== ip) return;
+        if (e.data?.type === 'failed') ipFailed(body, e.data.message);
+        else if (e.data?.type === 'drawing') { ip.drawing = true; ip.waiting = false; paintFeed(body); }
+        else if (e.data?.type === 'waiting') { ip.waiting = true; ip.drawing = false; paintFeed(body); }
+      };
+      worker.onerror = (e) => { e.preventDefault?.(); ipFailed(body, e.message || 'the IP video view stopped'); };
+      worker.postMessage({ type: 'start', canvas: offscreen, url: `${app.feedBase[body]}/${encodeURIComponent(body)}.h264?${Date.now()}`, source: 'h264', lut: !!lut }, [offscreen]);
+      f.img.after(canvas);
+      f.ip = ip;
+      f.wrap.classList.add('ip');
+    } catch (e) {
+      ipFailed(body, e.message);
+      return;
+    }
+  }
+  const key = lut ? `${lut.gamma}|${lut.l.version}` : 'none';
+  if (f.ip.key === key) return;
+  f.ip.key = key;
+  f.wrap.classList.toggle('lut', !!lut);
+  if (!lut) { f.ip.worker.postMessage({ type: 'nolut' }); return; }
+  call('lutData', lut.gamma).then((data) => {
+    if (data && f.ip?.key === key) f.ip.worker.postMessage({ type: 'lut', ...data }, [data.data.buffer]);
+  }).catch((e) => lutFailed(body, String(e.message || e)));
+}
+
+function stopIp(f) {
+  if (!f?.ip) return;
+  const { canvas, worker } = f.ip;
+  f.ip = null;
+  f.wrap.classList.remove('ip');
+  if (!f.lut) f.wrap.classList.remove('lut');
+  worker.postMessage({ type: 'stop' });
+  worker.terminate();
+  canvas.remove();
+}
+
+function ipFailed(body, message) {
+  const f = app.feeds[body];
+  if (!f) return;
+  stopIp(f);
+  f.ipFailed = message;
+  tellOnce(`${body}|ip`, `${body}: the IP video cannot be shown on this computer (${message}). Showing single pictures.`, true);
+  connectFeed(body);
+}
+
 // A picture keeps running on every tab, so it is already there when the Dashboard comes back.
 function connectFeed(body) {
   const f = app.feeds[body];
   if (!f || !app.feedBase[body]) return;
+  const card = cardOf(body);
+  if (card?.ipVideo && !card.pictureOff && !f.ipFailed) {
+    stopLut(f);
+    if (f.connected) { f.img.removeAttribute('src'); f.connected = false; }
+    showIp(f, body, lutFor(body));
+    return;
+  }
+  stopIp(f);
   // A short drop does not disconnect the picture: only 15 seconds of the camera not answering does.
   const online = !!cardOf(body)?.online;
   if (online) f.lastOnline = Date.now();
@@ -454,7 +518,10 @@ function paintFeed(body) {
   f.frame.hidden = !(online && c.focusFrame?.auto);
   f.frame.title = c?.focusFrame?.why || '';
   const off = !!c?.pictureOff;
-  f.none.hidden = online || off;
+  // IP video: until its first picture, the card says it is waiting for it, and on which port.
+  const ipWait = !off && f.ip && !f.ip.drawing;
+  f.none.textContent = ipWait ? (f.ip.waiting ? `Waiting for the camera's IP video on UDP port ${c?.ipVideo?.port}` : 'Starting IP video…') : 'No video';
+  f.none.hidden = off || (online && !ipWait) || (!!f.ip?.drawing);
   f.offBox.hidden = !off;
   f.picOff.hidden = off || !online;
   f.wrap.classList.toggle('pic-off', off);
@@ -960,6 +1027,16 @@ function checksSummary(r) {
     what.length ? h('span', { class: 'ck-what' }, what.join(' · ')) : null);
 }
 
+// All the cameras' pictures together, from the last second of each one on screen.
+function bandwidthText() {
+  const now = Date.now();
+  const live = Object.values(app.mbps || {}).filter((x) => now - x.at < 3000);
+  if (!live.length) return '';
+  const total = live.reduce((n, x) => n + x.mbps, 0);
+  return ` · pictures ${total >= 10 ? Math.round(total) : total.toFixed(1)} Mbps`;
+}
+function paintBandwidth() { const el = $('bandwidth'); if (el) el.textContent = bandwidthText(); }
+
 // The ATEM status, the camera checks and the show-wide findings, shown above both tabs.
 function banner(r) {
   const a = atemHeadline(app.atem || {});
@@ -971,7 +1048,8 @@ function banner(r) {
         h('span', { class: 'sub' }, a.sub)),
       checksSummary(r),
       h('span', { class: 'spacer' }),
-      h('span', { class: 'meta' }, `${r.switcherName} · ${r.profile} (${r.profileLabel}) · ${liveText}updated ${new Date(r.time).toLocaleTimeString()}`)),
+      h('span', { class: 'meta' }, `${r.switcherName} · ${r.profile} (${r.profileLabel}) · ${liveText}updated ${new Date(r.time).toLocaleTimeString()}`,
+        h('span', { id: 'bandwidth', title: 'What the live pictures take on the network, all cameras together' }, bandwidthText()))),
     r.global.filter((g) => g.status !== 'green').length ? h('div', { class: 'global' }, r.global.filter((g) => g.status !== 'green').map(row)) : '',
   ];
 }
@@ -1180,6 +1258,15 @@ async function renderLog() {
 }
 
 // ---------- settings ----------
+// Settings > IP video: how each camera's stream is arriving, live.
+function paintIpStatus(id, x) {
+  const el = document.querySelector(`[data-ipstatus="${CSS.escape(id)}"]`);
+  if (!el) return;
+  const fresh = x && Date.now() - (x.at || 0) < 5000;
+  el.className = x?.error ? 'err' : fresh && x.fps ? 'tag-ok' : 'empty';
+  el.textContent = x?.error ? x.error : !x ? '—' : fresh && x.fps ? `${x.fps} fps · ${(x.kbps / 1000).toFixed(1)} Mbps · ${x.mode}` : `waiting on UDP ${x.port}`;
+}
+
 // ---------- phone view ----------
 // A read-only page of the pictures and essentials for a phone on the same network. It acts at once,
 // apart from the Save button below it.
@@ -1222,6 +1309,9 @@ async function renderSettings() {
     atem: text({ value: s.atem?.ip || '', placeholder: 'Blank: found automatically' }),
     atemSearch: h('input', { type: 'checkbox', checked: s.atem?.search !== false }),
     tallyAtem: h('input', { type: 'checkbox', checked: s.tallyFromAtem !== false }),
+    liveParallel: h('select', { 'aria-label': 'Live view requests per camera' },
+      h('option', { value: 'auto', selected: !s.liveViewParallel }, 'Automatic (shared, up to 4)'),
+      [1, 2, 3, 4].map((n) => h('option', { value: String(n), selected: Number(s.liveViewParallel) === n }, `${n} per camera`))),
     poll: h('input', { type: 'number', min: 5, value: s.pollSeconds }),
     auto: h('input', { type: 'checkbox', checked: s.autoRefresh }),
     gamma: text({ value: s.standards.allowedGamma.join(', ') }),
@@ -1235,6 +1325,22 @@ async function renderSettings() {
     model: text({ value: l.requiredModel || '', placeholder: 'Any' }), lens: text({ value: l.expectedLens || '', placeholder: 'Any' }),
   }));
   const ips = s.bodies.map((b) => ({ id: b.id, model: b.model, ip: text({ value: b.ip }) }));
+  // IP video, per camera: on or off and its UDP port (5001 for the first camera, and so on).
+  const ipRows = s.bodies.map((b, i) => {
+    const v = s.ipVideo?.[b.id];
+    return {
+      id: b.id,
+      on: h('input', { type: 'checkbox', checked: !!v?.on, 'aria-label': `IP video for ${b.id}` }),
+      port: h('input', { type: 'number', min: 1024, max: 65535, value: v?.port || 5001 + i, class: 'port', 'aria-label': `IP video UDP port for ${b.id}` }),
+      status: h('span', { class: 'empty', 'data-ipstatus': b.id }, '—'),
+    };
+  });
+  const ipAddresses = h('span', { class: 'mono sel' });
+  act(() => call('ipVideoStatus')).then((st) => {
+    if (!st) return;
+    ipAddresses.textContent = st.addresses.length ? st.addresses.map((a) => `${a.ip} (${a.name})`).join('   ') : 'none: connect this computer to the cameras\' network';
+    for (const [id, x] of Object.entries(st.status || {})) paintIpStatus(id, x);
+  });
   const msg = h('span', {});
 
   // The ATEM input the laptop's video goes into. It is not a camera: no tally, no label.
@@ -1304,12 +1410,14 @@ async function renderSettings() {
       pollSeconds: Number(f.poll.value),
       autoRefresh: f.auto.checked,
       tallyFromAtem: f.tallyAtem.checked,
+      liveViewParallel: f.liveParallel.value,
       standards: {
         allowedGamma: list(f.gamma.value), shutterSpeed: Number(f.shutter.value),
         minRecordMinutes: Number(f.minutes.value), requireTally: f.tally.checked, requireRecording: f.rec.checked,
       },
       locations: locs.map((l) => ({ label: l.label.value, atemInput: l.input.value, requiredModel: l.model.value, expectedLens: l.lens.value })),
       bodies: ips.map((b) => ({ id: b.id, ip: b.ip.value })),
+      ipVideo: Object.fromEntries(ipRows.map((r) => [r.id, { on: r.on.checked, port: Number(r.port.value) }])),
     };
     const r = await act(() => call('saveSettings', payload));
     if (r) { pass.value = ''; $('auto').checked = f.auto.checked; toast('Settings saved'); msg.textContent = ''; }
@@ -1329,9 +1437,16 @@ async function renderSettings() {
     h('div', { class: 'section' }, h('h2', {}, 'Connections'),
       h('div', { class: 'fields' },
         field('ATEM IP address', f.atem), field('Camera user name', f.user), field('Camera password', pass),
-        field('Safety check every (seconds)', f.poll), tick('Live updates', f.auto), tick('Find the ATEM automatically', f.atemSearch), tick('Tally lamps follow the ATEM', f.tallyAtem)),
+        field('Safety check every (seconds)', f.poll), tick('Live updates', f.auto), tick('Find the ATEM automatically', f.atemSearch), tick('Tally lamps follow the ATEM', f.tallyAtem), field('Live view requests per camera', f.liveParallel)),
       h('p', { class: 'hint' }, 'With the address blank, or not answering, ShotReady searches every network this computer is on, Ethernet and Wi-Fi alike, and the cameras\' networks, and connects to the ATEM it finds. It keeps searching until one answers.'),
       h('div', { class: 'toolbar' }, h('button', { onclick: searchAtem }, 'Search now')), found),
+    h('div', { class: 'section' }, h('h2', {}, 'IP video (optional)'),
+      h('p', { class: 'hint' }, 'For smooth live pictures: the camera streams its own H.264 video to this computer, instead of ShotReady asking for one picture at a time. Off for every camera unless ticked here. While it is on, the camera\'s streaming is used for this and cannot stream anywhere else.'),
+      h('table', { class: 'ipvideo' },
+        h('thead', {}, h('tr', {}, ['Body', 'IP video', 'UDP port', 'Stream'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, ipRows.map((r) => h('tr', {}, h('td', {}, h('strong', {}, r.id)), h('td', {}, r.on), h('td', {}, r.port), h('td', {}, r.status))))),
+      h('p', {}, 'Send the stream to this computer: ', ipAddresses),
+      h('p', { class: 'hint' }, 'On each camera, in its IP streaming settings: protocol UDP or RTP, destination address one of the addresses above (the one on the cameras\' network), port as in this table, 1920x1080, 9 Mbps. Then start IP streaming on the camera, tick IP video here and press Save. The first time, Windows may ask whether ShotReady may use the network: allow it on private networks. The waveform still reads a single picture now and then. Picture off on a card stops showing the stream, but the camera keeps sending it until its streaming is stopped.')),
     h('div', { class: 'section' }, h('h2', {}, 'Phone view'), mobileBox.el),
     h('div', { class: 'section' }, h('h2', {}, 'Monitoring LUTs'),
       h('p', { class: 'hint' }, 'A LUT for each Log gamma, shown over the pictures in ShotReady only: nothing is sent to the cameras, and the waveform still reads the Log picture. Turn it on for a camera with the LUT button on its card; each camera uses the LUT for the gamma it is set to. The graphics card applies it to every frame.'),
@@ -1808,15 +1923,21 @@ async function start() {
     paintFeed(body);
     paintLevel(body);
   });
-  api.on('feedstat', ({ body, fps }) => {
+  api.on('feedstat', ({ body, fps, mbps }) => {
     const f = app.feeds[body];
-    if (!f || (!f.connected && !f.lut)) return;
-    f.fps.textContent = fps ? `${f.lut ? 'LUT · ' : ''}${fps} fps` : 'no frames';
+    if (!f || (!f.connected && !f.lut && !f.ip)) return;
+    // Each camera's frame rate and picture bandwidth; the Dashboard adds them up.
+    app.mbps ||= {};
+    app.mbps[body] = { mbps: mbps || 0, at: Date.now() };
+    paintBandwidth();
+    const rate = mbps >= 0.05 ? ` · ${mbps >= 10 ? Math.round(mbps) : mbps.toFixed(1)} Mbps` : '';
+    f.fps.textContent = fps ? `${f.ip ? 'IP · ' : ''}${f.lut || (f.ip && f.ip.key !== 'none') ? 'LUT · ' : ''}${fps} fps${rate}` : 'no frames';
     f.fps.classList.toggle('bad', !fps);
   });
   document.addEventListener('visibilitychange', syncFeeds);
   api.on('atem', (a) => { app.atem = a; refreshLive(); });
   api.on('mobile', (s) => paintMobile(s));
+  api.on('ipstatus', ({ body, status }) => paintIpStatus(body, status));
   api.on('playout', (s) => {
     app.playout = s;
     if (app.tab !== 'videoout') return;

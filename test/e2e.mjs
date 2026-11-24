@@ -66,7 +66,9 @@ try {
   assert.equal(await card('C80-2').locator('img').getAttribute('data-mark'), 'same', 'the picture element survives the rebuild');
   assert.equal(await loaded('C80-2'), true);
   assert.match(await card('C80-2').locator('.ffps').textContent(), /\d+ fps/, 'frames still arriving');
-  ok(`live pictures on 7 cameras at ${fps} fps, and they survive screen updates`);
+  // Each picture says its bandwidth, and the Dashboard adds them up.
+  await win.waitForFunction(() => /\d+ fps · [\d.]+ Mbps$/.test(document.querySelector('.card[data-body="C80-2"] .ffps')?.textContent || '') && /· pictures [\d.]+ Mbps/.test(document.getElementById('bandwidth')?.textContent || ''), null, { timeout: 5000 });
+  ok(`live pictures on 7 cameras at ${fps} fps with their bandwidth, and they survive screen updates`);
   await win.waitForFunction(() => /\d+% avg \d+%/.test(document.querySelector('[data-wfm="C80-2"]')?.textContent || ''), null, { timeout: 8000 });
   const log = await win.evaluate(() => window.shotready.call('events'));
   assert.ok(!log.some((e) => /measured on the main thread/.test(e.text)), 'no camera fell back to the main thread');
@@ -290,6 +292,45 @@ try {
   await card('C80-4').locator('.foff button', { hasText: 'Turn picture on' }).click();
   await win.waitForFunction(() => { const f = document.querySelector('.card[data-body="C80-4"] .feed'); return f.querySelector('.foff').hidden && f.querySelector('img').naturalWidth > 0; }, null, { timeout: 10000 });
   ok('picture off per camera: from its card, the picture stops and its waveform with it, and back on');
+
+  // IP video (optional): the demo's C80-2 streams to UDP 5002. Ticked in Settings, its card shows the
+  // decoded stream; unticked, single pictures again.
+  const ipSet = async (on) => {
+    await tab('Settings');
+    const box = win.locator('input[aria-label="IP video for C80-2"]');
+    if (on) await box.check(); else await box.uncheck();
+    await win.locator('#save-settings').click();
+    await win.waitForFunction(() => /Settings saved/.test(document.getElementById('toast').textContent), null, { timeout: 8000 });
+  };
+  await ipSet(true);
+  await win.waitForFunction(() => /fps · [\d.]+ Mbps · MPEG-TS over UDP/.test(document.querySelector('[data-ipstatus="C80-2"]')?.textContent || ''), null, { timeout: 10000 });
+  await tab('Dashboard');
+  await win.waitForFunction(() => { const f = document.querySelector('.card[data-body="C80-2"] .feed'); return f?.classList.contains('ip') && f.querySelector('canvas.flut') && f.querySelector('.fnone').hidden && /^IP · \d+ fps( · [\d.]+ Mbps)?$/.test(f.querySelector('.ffps').textContent); }, null, { timeout: 15000 });
+  assert.equal(await card('C80-2').locator('img').getAttribute('src'), null, 'no single pictures while the stream is shown');
+  // A picture for the docs only, so a card being redrawn at that moment does not fail the test.
+  await card('C80-2').screenshot({ path: join(shots, '12-ip-video.png'), timeout: 3000 }).catch(() => {});
+  // With IP video on: WFM and RGB keep their readings about 4 times a second, a click on the picture
+  // still moves the AF frame (onto the person there), and 1-Shot AF still goes to the camera.
+  const waves = await win.evaluate(() => new Promise((done) => {
+    let n = 0;
+    const off = window.shotready.on('wave', (w) => { if (w.body === 'C80-2') n++; });
+    setTimeout(() => { off(); done(n); }, 3000);
+  }));
+  assert.ok(waves >= 8, `WFM readings with IP video on: ${waves} in 3 s`);
+  const ipFeed = card('C80-2').locator('.feed');
+  const ipSize = await ipFeed.boundingBox();
+  await ipFeed.click({ position: { x: ipSize.width * 0.36, y: ipSize.height * 0.5 } });
+  await win.waitForFunction(() => { const b = document.querySelector('.card[data-body="C80-2"] .fbox'); return Math.abs(parseFloat(b.style.left) + parseFloat(b.style.width) / 2 - 36) < 1.5; }, null, { timeout: 5000 });
+  await win.evaluate(() => { window.__log = []; window.shotready.on('log', (e) => window.__log.push(e.text)); });
+  // Pressed straight on the button: this machine has no graphics card and draws the page at a frame
+  // or two a second, so waiting for the button to sit still (as a mouse click does) can take longer
+  // than the test allows. The camera getting the command is what is checked.
+  await retry(() => card('C80-2').locator('.one-shot-btn').dispatchEvent('click', {}, { timeout: 3000 }).then(() => true));
+  await win.waitForFunction(() => window.__log.some((t) => t === 'C80-2: 1-Shot AF'), null, { timeout: 5000 });
+  await ipSet(false);
+  await tab('Dashboard');
+  await win.waitForFunction(() => { const f = document.querySelector('.card[data-body="C80-2"] .feed'); return !f.classList.contains('ip') && !f.querySelector('canvas.flut') && f.querySelector('img').naturalWidth > 0; }, null, { timeout: 15000 });
+  ok('IP video: ticked in Settings, the camera\'s stream is decoded on its card and reported, WFM 4 times a second, tap focus and 1-Shot AF work; unticked, single pictures again');
 
   // The electronic level under the picture: a green dot on an axis within 0.5° of level.
   await win.waitForFunction(() => /Roll \+0\.2°\s*·\s*Tilt −1\.4°/.test(document.querySelector('.card[data-body="C80-1"] [data-level]')?.textContent || ''), null, { timeout: 8000 });

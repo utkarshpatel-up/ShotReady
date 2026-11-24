@@ -267,6 +267,9 @@ button.rec-btn.live, button.rec-btn.live:hover:not(:disabled) { background: var(
 /* monitoring LUT: the picture drawn through the LUT on the graphics card */
 .feed canvas.flut { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .feed.lut .ffps { color: var(--blue); }
+.feed.ip img { visibility: hidden; }
+.feed.ip .ffps { color: var(--green); }
+.feed.ip.lut .ffps { color: var(--blue); }
 .card-actions .lut-btn.on { background: #e9ebef; color: #14161a; font-weight: 600; }
 table.luts select { width: auto; }
 

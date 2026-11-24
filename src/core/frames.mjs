@@ -24,6 +24,7 @@ export class FrameSource {
     this.parallel = 0;       // the most requests in flight at once; 0 means idle
     this.limit = 1;          // how many the link is coping with now, never above parallel
     this.intervalMs = 0;     // pause after each request, for a slow background rate
+    this.periodMs = 0;       // or a steady rate: one request starting every periodMs
     this.running = false;
     this.active = new Set();
     this.ids = 0;
@@ -37,9 +38,10 @@ export class FrameSource {
 
   cap() { return Math.min(this.parallel, this.limit); }
 
-  setMode({ parallel, intervalMs }) {
+  setMode({ parallel, intervalMs, periodMs = 0 }) {
     this.parallel = parallel;
     this.intervalMs = intervalMs;
+    this.periodMs = periodMs;
     this.fill();
   }
 
@@ -78,7 +80,7 @@ export class FrameSource {
         continue;
       }
       // On a slow link, rest for half a frame time so other requests get through.
-      const rest = (this.rtt > 400 ? this.rtt * 0.5 : 0) + this.intervalMs;
+      const rest = (this.rtt > 400 ? this.rtt * 0.5 : 0) + this.intervalMs + (this.periodMs ? Math.max(0, this.periodMs - (performance.now() - started)) : 0);
       if (rest > 0) await sleep(rest);
     }
     this.active.delete(id);

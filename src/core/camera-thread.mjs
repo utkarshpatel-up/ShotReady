@@ -19,11 +19,13 @@ export class CameraThread {
       this.worker.on('message', (m) => {
         if (m.type === 'ready') { this.base = m.base; resolve(m.base); }
         else if (m.type === 'viewers') on.viewers?.(m.n);
+        else if (m.type === 'videoViewers') on.videoViewers?.(m.n);
+        else if (m.type === 'ipstats') on.ipstats?.(m.stats);
         else if (m.type === 'state') on.state?.(m.state, m.reason);
         else if (m.type === 'level') on.level?.(m.wave);
         else if (m.type === 'wave') on.wave?.(Buffer.from(m.jpeg));
         else if (m.type === 'note') on.note?.(m.text);
-        else if (m.type === 'stats') on.stats?.(m.frames);
+        else if (m.type === 'stats') on.stats?.(m.frames, m.bytes || 0);
       });
     });
     this.ready.catch(() => {});
@@ -35,6 +37,12 @@ export class CameraThread {
   }
 
   setSource(url, auth) { this.worker.postMessage({ type: 'source', url, auth }); }
+
+  // The camera's own IP video on this UDP port, or null for none.
+  setIpVideo(port) {
+    this.ipPort = port || null;
+    this.worker.postMessage({ type: 'ipvideo', port: this.ipPort });
+  }
 
   stop() {
     this.worker.postMessage({ type: 'stop' });

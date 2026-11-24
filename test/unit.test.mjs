@@ -872,3 +872,188 @@ test('sensor mode: shown and changed where the camera offers it, never on a came
   assert.equal(svc.lastResult.labels.find((l) => l.body === 'C80-3').controls.some((c) => c.name === 'Sensor mode'), false, 'a camera that does not report it gets no control');
   svc.stop();
 });
+
+test('camera login: remembered per camera, so a frame is one request, not two; asked again when the camera says so', async () => {
+  const { httpGet, forgetLogins } = await import('../src/core/http.mjs');
+  const { createHash } = await import('node:crypto');
+  const md5 = (s) => createHash('md5').update(s).digest('hex');
+  forgetLogins();
+  let hits = 0, nonce = 'n1', scheme = 'digest';
+  const srv = http.createServer((req, res) => {
+    hits++;
+    const a = req.headers.authorization || '';
+    const p = {};
+    a.replace(/(\w+)="?([^",]+)"?/g, (_, k, v) => { p[k] = v; });
+    const good = scheme === 'basic' ? a === `Basic ${Buffer.from('admin:pw').toString('base64')}`
+      : a.startsWith('Digest') && p.nonce === nonce && p.response === md5(`${md5(`admin:XC:pw`)}:${nonce}:${p.nc}:${p.cnonce}:auth:${md5(`GET:${req.url}`)}`);
+    if (!good) { res.writeHead(401, { 'WWW-Authenticate': scheme === 'basic' ? 'Basic realm="XC"' : `Digest realm="XC", nonce="${nonce}", qop="auth"` }); res.end(); return; }
+    res.end('ok');
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${srv.address().port}/-wvhttp-01-/image.cgi`;
+  const login = { user: 'admin', pass: 'pw' };
+  try {
+    const count = async () => { const before = hits; const res = await httpGet(url, login); assert.equal(await res.text(), 'ok'); return hits - before; };
+    assert.equal(await count(), 2, 'the first request learns the login');
+    assert.equal(await count(), 1, 'then one request each');
+    assert.equal(await count(), 1);
+    nonce = 'n2'; // the camera's nonce goes stale
+    assert.equal(await count(), 2, 'turned away once, then logged in again');
+    assert.equal(await count(), 1);
+    scheme = 'basic';
+    forgetLogins();
+    assert.equal(await count(), 2);
+    assert.equal(await count(), 1, 'Basic: one request each as well');
+    const before = hits;
+    assert.equal((await httpGet(url, { user: 'admin', pass: 'wrong' })).status, 401);
+    assert.equal((await httpGet(url, { user: 'admin', pass: 'wrong' })).status, 401);
+    assert.equal(hits - before, 4, 'a wrong login is not remembered');
+  } finally { srv.close(); forgetLogins(); }
+});
+
+test('live view budget: 32 shared requests, at most 4 a camera; or a fixed number from Settings', async () => {
+  const svc = service();
+  svc.framesOn = true;
+  const modes = {};
+  svc.cams = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`X${i}`, { setMode: (m) => { modes[`X${i}`] = m.parallel; } }]));
+  const watch = (n) => { svc.viewers = Object.fromEntries(Array.from({ length: n }, (_, i) => [`X${i}`, 1])); svc.applyViewing(); return modes.X0; };
+  assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8].map(watch), [4, 4, 4, 4, 4, 4, 4, 4], 'up to 8 cameras: 4 each');
+  assert.deepEqual([9, 10, 11, 12].map(watch), [3, 3, 2, 2], 'more cameras share the 32');
+  const periods = {};
+  svc.cams.X0.setMode = (m) => { modes.X0 = m.parallel; periods.p = m.parallel; periods.period = m.periodMs; };
+  watch(1);
+  assert.equal((1000 * periods.p) / periods.period, 25, 'never more than 25 frames a second from a camera');
+  svc.cfg.liveViewParallel = 1;
+  assert.equal(watch(2), 1, 'a fixed number from Settings');
+  svc.cfg.liveViewParallel = 3;
+  assert.equal(watch(8), 3);
+  assert.throws(() => svc.saveSettings({ ...svc.settingsView(), liveViewParallel: 9 }), /Automatic or 1 to 4/);
+  svc.saveSettings({ ...svc.settingsView(), liveViewParallel: 'auto' });
+  assert.equal(svc.cfg.liveViewParallel, undefined);
+  svc.cams = {};
+  svc.stop();
+});
+
+test('IP video: transport stream over UDP, the same in RTP, and H.264 in RTP all come back whole', async () => {
+  const { rtpHeader, nalUnits, isKeyframe, avcCodec, tsDemuxer, h264RtpDepacketizer, IpVideoReceiver } = await import('../src/core/ipvideo.mjs');
+  const { annexBPictures, tsMuxer, h264RtpPackets, startIpVideoSender } = await import('../src/sim/ipvideo-sender.mjs');
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const clip = fileURLToPath(new URL('./fixtures/bars.mp4', import.meta.url));
+  const pictures = await annexBPictures(clip);
+  assert.equal(pictures.length, 50);
+  assert.equal(isKeyframe(pictures[0].data), true);
+  assert.equal(isKeyframe(pictures[1].data), false);
+  assert.equal(avcCodec(pictures[0].data), 'avc1.640c1e');
+  assert.deepEqual(nalUnits(pictures[0].data).slice(0, 2).map(([t]) => t), [7, 8], 'SPS and PPS lead a key frame');
+  assert.equal(rtpHeader(Buffer.from([0x47, 0, 0, 0])), null, 'a transport stream packet is not RTP');
+
+  // Transport stream: each picture back, with its time.
+  const back = [];
+  const demux = tsDemuxer((data, pts) => back.push([Buffer.from(data), pts]));
+  const mux = tsMuxer();
+  pictures.slice(0, 10).forEach((p, i) => demux(mux(p, i * 3600)));
+  assert.equal(back.length, 9, 'a picture is handed on when the next starts');
+  back.forEach(([data, pts], i) => { assert.deepEqual(data, pictures[i].data); assert.equal(pts, i * 3600); });
+
+  // H.264 in RTP, a large picture split into FU-A fragments.
+  const got = [];
+  const depack = h264RtpDepacketizer((data, time) => got.push([data, time]));
+  let seq = 0;
+  pictures.slice(0, 5).forEach((p, i) => {
+    const r = h264RtpPackets(p.data, i * 3600, seq, 200);
+    seq = r.seq;
+    for (const pkt of r.packets) { const h = rtpHeader(pkt); depack(pkt.subarray(h.start, h.end), h.time, h.marker); }
+  });
+  assert.equal(got.length, 5);
+  got.forEach(([data], i) => assert.deepEqual(data, pictures[i].data));
+
+  // Over UDP, the three ways a camera sends it.
+  for (const [i, mode] of ['ts', 'ts-rtp', 'h264-rtp'].entries()) {
+    const port = 47100 + i;
+    const seen = [], stats = [];
+    const rx = new IpVideoReceiver({ port, onPicture: (p) => seen.push(p), onStats: (s) => stats.push(s) });
+    rx.start();
+    await sleep(50);
+    const tx = await startIpVideoSender({ port, file: clip, mode });
+    await sleep(1300);
+    tx.stop();
+    rx.stop();
+    assert.ok(seen.length >= 20, `${mode}: ${seen.length} pictures`);
+    assert.ok(seen.every((p, k) => Buffer.compare(p.data, pictures[k % 50].data) === 0), `${mode}: every picture whole`);
+    assert.equal(seen[0].codec, 'avc1.640c1e');
+    assert.equal(stats.at(-1).mode, { ts: 'MPEG-TS over UDP', 'ts-rtp': 'MPEG-TS in RTP', 'h264-rtp': 'H.264 in RTP' }[mode]);
+  }
+});
+
+test('IP video: handed to the window from the last key frame, switched on per camera in Settings, and its stream reported', async () => {
+  const { FeedServer } = await import('../src/core/feedserver.mjs');
+  const { annexBPictures, startIpVideoSender } = await import('../src/sim/ipvideo-sender.mjs');
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const clip = fileURLToPath(new URL('./fixtures/bars.mp4', import.meta.url));
+  const pictures = await annexBPictures(clip);
+
+  // The hand-off: a window that connects mid-stream gets everything since the last key frame first.
+  const views = [];
+  const feed = new FeedServer({ onVideoViewers: (_b, n) => views.push(n) });
+  const base = await feed.start();
+  for (const p of pictures.slice(0, 30)) feed.pushVideo('C80-1', p); // key frames at 0 and 25
+  const res = await fetch(`${base}/C80-1.h264`);
+  const reader = res.body.getReader();
+  let buf = Buffer.alloc(0);
+  const parts = [];
+  while (parts.length < 6) {
+    buf = Buffer.concat([buf, Buffer.from((await reader.read()).value)]);
+    while (buf.length >= 13 && buf.length >= 13 + buf.readUInt32BE(0)) {
+      const len = buf.readUInt32BE(0);
+      parts.push({ key: buf[4] === 1, data: buf.subarray(13, 13 + len) });
+      buf = buf.subarray(13 + len);
+    }
+    if (parts.length === 5) feed.pushVideo('C80-1', pictures[30]);
+  }
+  assert.deepEqual(parts.map((p) => p.key), [true, false, false, false, false, false], 'starts at the last key frame');
+  assert.deepEqual(parts[0].data, pictures[25].data);
+  assert.deepEqual(parts[5].data, pictures[30].data, 'then the live pictures');
+  assert.equal(feed.videoViewers('C80-1'), 1);
+  await reader.cancel();
+  feed.stop();
+
+  // Settings: per camera, on or off, a UDP port; checked before anything is saved. Waveform on, as in
+  // the app.
+  const svc = new ShotReadyService(mkdtempSync(join(tmpdir(), 'shotready-')), { defaultConfig: sim.config({ pollSeconds: 3600 }), dupDelayMs: 1, waveform: true });
+  try {
+    await svc.assignInOrder();
+    svc.startLive();
+    await svc.check({ force: true });
+    const settings = svc.settingsView();
+    assert.throws(() => svc.saveSettings({ ...settings, ipVideo: { 'C80-1': { on: true, port: 80 } } }), /1024 to 65535/);
+    assert.throws(() => svc.saveSettings({ ...settings, ipVideo: { 'C80-1': { on: true, port: 47210 }, 'C80-2': { on: true, port: 47210 } } }), /same IP video port \(47210\)/);
+    svc.saveSettings({ ...settings, ipVideo: { 'C80-1': { on: true, port: 47210 }, 'C80-2': { on: false, port: 47211 } } });
+    assert.deepEqual([svc.ipVideoOf('C80-1'), svc.ipVideoOf('C80-2')], [{ port: 47210 }, null]);
+    assert.equal(svc.cams['C80-1'].ipPort, 47210, 'the camera thread listens');
+    assert.equal(svc.cams['C80-2'].ipPort, null);
+    await svc.check({ force: true });
+    assert.deepEqual(svc.lastResult.labels.find((l) => l.body === 'C80-1').ipVideo, { port: 47210 });
+    // The camera streams: its thread receives it and the stream is reported.
+    const tx = await startIpVideoSender({ port: 47210, file: clip, mode: 'ts' });
+    const cam = sim.bodies['C80-1'];
+    cam.frame = () => Buffer.from([0xff, 0xd8, 0, 0xff, 0xd9]);
+    try {
+      assert.ok(await until(() => svc.ipStatus['C80-1']?.fps > 10, 5000), JSON.stringify(svc.ipStatus));
+      assert.equal(svc.ipStatus['C80-1'].mode, 'MPEG-TS over UDP');
+      // A window watching the IP video: focus data runs, and single pictures for the waveform come
+      // 4 times a second (not live, not once a second).
+      const { 'C80-1': base } = await svc.feedBase();
+      const watcher = await fetch(`${base}/C80-1.h264`);
+      assert.ok(await until(() => svc.cams['C80-1'].mode.periodMs === 250 && cam.metaSubs.size === 1), 'IP video watched: 4 waveform pictures a second, and focus data');
+      assert.equal(svc.cams['C80-1'].mode.parallel, 1);
+      const before = cam.requests;
+      await sleep(2000);
+      const perSecond = (cam.requests - before) / 2;
+      assert.ok(perSecond >= 3 && perSecond <= 6, `about 4 single pictures a second (${perSecond})`);
+      await watcher.body.cancel();
+      assert.ok(await until(() => svc.cams['C80-1'].mode.periodMs !== 250), 'nobody watching: back to the slow rate');
+    } finally { tx.stop(); }
+    svc.saveSettings({ ...svc.settingsView(), ipVideo: {} });
+    assert.equal(svc.cams['C80-1'].ipPort, null, 'off again: the thread stops listening');
+  } finally { svc.stop(); }
+});

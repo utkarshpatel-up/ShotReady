@@ -29,6 +29,10 @@ const DEFAULT_LABELS = Array.from({ length: 8 }, (_, i) => `CAM ${i + 1}`);
 // How long a tally lamp change not on the M/E 1 program or preview bus must hold before the lamp
 // follows it: two frames at 25p.
 export const TALLY_SETTLE_MS = 80;
+// Overlapping picture requests shared between the cameras on screen (see applyViewing).
+export const LIVE_BUDGET = 32;
+// The most frames a second a camera's live picture is fetched at.
+export const LIVE_FPS = 25;
 
 function writeJsonAtomic(path, data) {
   const tmp = `${path}.tmp`;
@@ -101,6 +105,9 @@ export class ShotReadyService extends EventEmitter {
     this.focusStreams = {};
     this.focus = {};
     this.viewers = {};
+    this.videoViewers = {}; // windows watching a camera's IP video
+    this.pictureMbps = {};  // each camera's single pictures, megabits a second
+    this.ipStatus = {};     // each camera's IP video stream: frame rate, kbps, kind, error
     this.waveAt = {};
     this.dupAt = {};
     this.frameCounts = {};
@@ -362,6 +369,7 @@ export class ShotReadyService extends EventEmitter {
         essentials: rb.error ? null : essentials(rb.info, rb.summary, this.std),
         controls: rb.error ? null : cameraControls(rb.info),
         pictureOff: this.pictureOff(id),
+        ipVideo: this.ipVideoOf(id),
         sdi: rb.error ? null : { now: fmtVideo(rb.summary?.output), want: fmtVideo(target.sdi), settable: !!resolutionControl(rb.info) },
         record: rb.error ? null : recordState(rb.info),
         focusDrive: rb.error ? null : focusDrive(rb.info),
@@ -378,7 +386,7 @@ export class ShotReadyService extends EventEmitter {
       // Shown on the card so a spare can be readied, but not counted until it is on a label.
       const known = this.state.bodies[rb.body.id] || {};
       const checks = rb.error ? [] : [...checkCamera(rb.summary, {}, checkProfile, std), ...mandatoryChecks(rb.info, rb.summary, this.std, known.confirmed)];
-      spares.push({ body: rb.body.id, ip: rb.body.ip, online: !rb.error, summary: rb.summary || null, results, checks, spare: true, essentials: rb.error ? null : essentials(rb.info, rb.summary, this.std), controls: rb.error ? null : cameraControls(rb.info), pictureOff: this.pictureOff(rb.body.id), sdi: rb.error ? null : { now: fmtVideo(rb.summary?.output), want: fmtVideo(target.sdi), settable: !!resolutionControl(rb.info) }, record: rb.error ? null : recordState(rb.info), focusDrive: rb.error ? null : focusDrive(rb.info), focusFrame: rb.error ? null : focusFrame(rb.info), oneShot: rb.error ? null : okWhy(oneShotAf(rb.info)) });
+      spares.push({ body: rb.body.id, ip: rb.body.ip, online: !rb.error, summary: rb.summary || null, results, checks, spare: true, essentials: rb.error ? null : essentials(rb.info, rb.summary, this.std), controls: rb.error ? null : cameraControls(rb.info), pictureOff: this.pictureOff(rb.body.id), ipVideo: this.ipVideoOf(rb.body.id), sdi: rb.error ? null : { now: fmtVideo(rb.summary?.output), want: fmtVideo(target.sdi), settable: !!resolutionControl(rb.info) }, record: rb.error ? null : recordState(rb.info), focusDrive: rb.error ? null : focusDrive(rb.info), focusFrame: rb.error ? null : focusFrame(rb.info), oneShot: rb.error ? null : okWhy(oneShotAf(rb.info)) });
     }
 
     for (const c of [...labels, ...spares]) {
@@ -497,15 +505,23 @@ export class ShotReadyService extends EventEmitter {
     for (const body of this.cfg.bodies) {
       this.cams[body.id] = new CameraThread(body.id, { url: this.frameUrl(body), auth: this.authForRequests() }, {
         viewers: (n) => this.onViewers(body.id, n),
+        videoViewers: (n) => { this.videoViewers[body.id] = n; this.applyViewing(); },
+        ipstats: (stats) => this.onIpStats(body.id, stats),
         state: (state) => { if (state === 'down') this.setWave(body.id, null); },
         // A frame still on its way when the picture is switched off is not measured.
         level: (wave) => { if (!this.pictureOff(body.id)) this.setWave(body.id, wave); },
         wave: (jpeg) => { if (!this.pictureOff(body.id)) this.measureWave(body.id, jpeg); },
         note: (text) => this.log('info', `${body.id}: ${text}`),
-        stats: (frames) => { if (this.viewers[body.id] > 0) this.emit('feedstat', { body: body.id, fps: frames }); },
+        // A camera on IP video says its stream's frame rate instead (onIpStats).
+        // The frame rate and the picture bandwidth (megabits a second), measured each second.
+        stats: (frames, bytes) => {
+          this.pictureMbps[body.id] = (bytes * 8) / 1e6;
+          if (this.viewers[body.id] > 0 && !(this.ipVideoOf(body.id) && this.videoViewers[body.id] > 0)) this.emit('feedstat', { body: body.id, fps: frames, mbps: this.pictureMbps[body.id] });
+        },
         failed: (message) => this.log('red', `${body.id}: video thread stopped (${message})`),
       });
     }
+    for (const body of this.cfg.bodies) this.cams[body.id].setIpVideo(this.ipVideoOf(body.id)?.port);
     this.feedReady = Promise.all(Object.values(this.cams).map((c) => c.ready));
     this.feedReady.catch((e) => this.log('red', `Live view could not start: ${e.message}`));
   }
@@ -534,6 +550,45 @@ export class ShotReadyService extends EventEmitter {
   // A camera's picture switched off on its card (to save network bandwidth): kept between runs.
   pictureOff(id) { return !!this.state.picturesOff?.[id]; }
 
+  // ---------- the camera's own IP video (optional) ----------
+  // Settings > IP video: per camera, on or off, and the UDP port it streams to. See ipvideo.mjs.
+  ipVideoOf(id) {
+    const v = this.cfg.ipVideo?.[id];
+    return v?.on && v.port ? { port: Number(v.port) } : null;
+  }
+
+  onIpStats(id, stats) {
+    if (stats) this.ipStatus[id] = { ...stats, at: Date.now() }; else delete this.ipStatus[id];
+    if (stats && this.videoViewers[id] > 0) this.emit('feedstat', { body: id, fps: stats.fps, mbps: stats.kbps / 1000, ip: true });
+    this.emit('ipstatus', { body: id, status: this.ipStatus[id] || null });
+  }
+
+  // Checked before anything is saved; applied at once to the cameras' threads, each one listening
+  // on its port or stopping.
+  setIpVideoConfig(map) { this.applyIpVideo(this.checkIpVideo(map)); }
+
+  applyIpVideo(next) {
+    this.cfg.ipVideo = next;
+    for (const b of this.cfg.bodies) this.cams[b.id]?.setIpVideo(this.ipVideoOf(b.id)?.port);
+  }
+
+  checkIpVideo(map) {
+    const next = {};
+    const used = new Map();
+    for (const b of this.cfg.bodies) {
+      const v = map?.[b.id];
+      if (!v) continue;
+      const port = Number(v.port);
+      if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error(`${b.id}: the IP video port must be a whole number from 1024 to 65535`);
+      if (v.on) {
+        if (used.has(port)) throw new Error(`${b.id} and ${used.get(port)} have the same IP video port (${port})`);
+        used.set(port, b.id);
+      }
+      next[b.id] = { on: !!v.on, port };
+    }
+    return next;
+  }
+
   setPicture(id, on) {
     if (!this.findBody(id)) throw new Error(`Unknown body "${id}"`);
     const off = { ...this.state.picturesOff };
@@ -551,20 +606,30 @@ export class ShotReadyService extends EventEmitter {
     if (!this.framesOn) return;
     const watched = Object.keys(this.viewers).filter((id) => this.viewers[id] > 0 && !this.pictureOff(id));
     const fixed = Number(this.cfg.liveViewParallel);
-    // 8 overlapping requests to share between the watched cameras, at most 4 each (more than 4
-    // made the C80 return errors): 1 or 2 cameras get 4, 3 or 4 get 2, 5 or more get 1.
-    const parallel = fixed >= 1 && fixed <= 4 ? fixed : Math.max(1, Math.min(4, Math.floor(8 / Math.max(1, watched.length))));
+    // LIVE_BUDGET overlapping requests shared between the watched cameras, at most 4 each (more than
+    // 4 made the C80 return errors): up to 8 cameras get 4 each, more get fewer. Each camera still
+    // backs off by itself if its frames get slower (frames.mjs), and the cards show each camera's
+    // bandwidth. Settings > Connections can fix the number instead.
+    const parallel = fixed >= 1 && fixed <= 4 ? fixed : Math.max(1, Math.min(4, Math.floor(LIVE_BUDGET / Math.max(1, watched.length))));
     // Each camera's thread measures its own frames; opts.decodeJpeg is the main-thread fallback.
     const measure = (this.opts.waveform ?? !!this.opts.decodeJpeg) && this.cfg.waveformMs > 0;
     const idle = measure ? { parallel: 1, intervalMs: this.cfg.waveformMs, waveGap: this.cfg.waveformMs } : { parallel: 0, intervalMs: 0, waveGap: 0 };
     // Waveform from the same frames: quicker while someone is watching.
-    const live = { parallel, intervalMs: 0, waveGap: measure ? 250 : 0 };
+    // Never more than LIVE_FPS frames a second from a camera: smooth for the show's 25p, and no more
+    // bandwidth than that. Each of the overlapping requests starts at most every parallel × 40 ms.
+    const live = { parallel, intervalMs: 0, periodMs: Math.round((parallel * 1000) / LIVE_FPS), waveGap: measure ? 250 : 0 };
     // A camera whose picture is switched off sends nothing at all: no live frames, no slow frames for
     // the waveform, no focus data. Only its settings are read, as for any camera.
     const none = { parallel: 0, intervalMs: 0, waveGap: 0 };
-    for (const [id, cam] of Object.entries(this.cams)) cam.setMode(this.pictureOff(id) ? none : this.viewers[id] > 0 ? live : idle);
+    // A camera on IP video on screen: its picture comes from its stream, but the waveform and RGB keep
+    // their 4 readings a second from single pictures, one every 250 ms, each one measured.
+    const ipWave = measure ? { parallel: 1, intervalMs: 0, periodMs: 250, waveGap: 200 } : none;
+    for (const [id, cam] of Object.entries(this.cams)) {
+      cam.setMode(this.pictureOff(id) ? none : this.viewers[id] > 0 ? live : this.videoViewers[id] > 0 ? ipWave : idle);
+    }
     for (const body of this.cfg.bodies) {
-      const want = this.viewers[body.id] > 0 && !this.pictureOff(body.id);
+      // Focus data for a camera on screen, whether its picture comes as single frames or as IP video.
+      const want = (this.viewers[body.id] > 0 || this.videoViewers[body.id] > 0) && !this.pictureOff(body.id);
       if (want && !this.focusStreams[body.id]) this.startFocus(body);
       else if (!want && this.focusStreams[body.id]) this.stopFocus(body.id);
     }
@@ -1652,6 +1717,12 @@ export class ShotReadyService extends EventEmitter {
     if (!(shutter > 0)) throw new Error('Shutter speed must be a positive number');
     if (!(minutes >= 0)) throw new Error('Minimum record minutes cannot be negative');
     if (!(poll >= 2)) throw new Error('Safety check must be at least 2 seconds');
+    const ipNext = 'ipVideo' in s ? this.checkIpVideo(s.ipVideo) : null;
+    let liveNext = null;
+    if ('liveViewParallel' in s) {
+      liveNext = s.liveViewParallel === 'auto' || s.liveViewParallel === '' || s.liveViewParallel == null ? 'auto' : Number(s.liveViewParallel);
+      if (liveNext !== 'auto' && !(Number.isInteger(liveNext) && liveNext >= 1 && liveNext <= 4)) throw new Error('Live view requests per camera must be Automatic or 1 to 4');
+    }
 
     this.renameLabels(this.cfg.locations.map((l) => l.label), labels);
 
@@ -1670,6 +1741,8 @@ export class ShotReadyService extends EventEmitter {
     this.cfg.atem = { ip: atemIp, search: atemSearch };
     if (laptop) this.cfg.laptopVideo = { atemInput: laptop }; else delete this.cfg.laptopVideo;
     this.cfg.pollSeconds = poll;
+    if (ipNext) this.applyIpVideo(ipNext);
+    if (liveNext === 'auto') delete this.cfg.liveViewParallel; else if (liveNext) this.cfg.liveViewParallel = liveNext;
     const tallyWas = this.cfg.tallyFromAtem !== false;
     if ('tallyFromAtem' in s) this.cfg.tallyFromAtem = s.tallyFromAtem !== false;
     const tallyNow = this.cfg.tallyFromAtem !== false;
@@ -1694,6 +1767,7 @@ export class ShotReadyService extends EventEmitter {
     this.saveConfig();
     this.saveState();
     this.log('info', 'Settings saved');
+    this.applyViewing();
     if (tallyWas && !tallyNow) { this.log('info', 'Tally lamps no longer follow the ATEM: the lamps ShotReady lit are turned off'); this.releaseLamps(); }
     if (!tallyWas && tallyNow) { this.log('info', 'Tally lamps follow the ATEM again'); this.syncTally(); }
     if (atemChanged) this.startAtem();

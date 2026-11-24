@@ -341,14 +341,36 @@ refuses a stream is logged, retried every 30 seconds, and covered by the regular
 
 ## Live view and focus box
 
-Each camera card on the Dashboard shows the camera's picture. The C80 has no continuous video
-stream, so ShotReady asks for single frames (`image.cgi`) with several requests overlapping: about
-10 to 18 frames a second per camera on a real C80. Pictures are only fetched for cameras on screen
-(not while another tab is open or the window is minimised) and not for offline cameras. The more
-cameras are on screen, the fewer overlapping requests each gets, so eight pictures do not swamp the
-network: 1 or 2 cameras get 4 overlapping requests each (the most the C80 handled without errors),
-3 or 4 cameras get 2, and 5 or more get 1. Set `liveViewParallel` (1 to 4) in `cameras.json` to
-force a number. A wired connection matters: over a jittery Wi-Fi link the rate drops a lot.
+Each camera card on the Dashboard shows the camera's picture. Without IP video (below), ShotReady
+asks the camera for single frames (`image.cgi`) with several requests overlapping: about 10 to 18
+frames a second per camera on a real C80. Pictures are only fetched for cameras on screen (not while
+another tab is open or the window is minimised) and not for offline cameras. Each camera can have 4
+requests overlapping (the most the C80 handled without errors), up to 8 cameras; more cameras share
+32. A camera's picture is never fetched faster than 25 frames a second, enough for a 25p show and no
+more bandwidth than that. Each camera still backs off by itself when its frames get slower.
+**Settings > Connections > Live view requests per camera** fixes the number (1 to 4) instead.
+
+Each picture's corner shows its frame rate and its bandwidth (for example "25 fps · 12 Mbps"), and
+the Dashboard's top line adds them up ("pictures 96 Mbps"). The bandwidth is the picture size the
+camera sends times the frame rate, so it is measured, not assumed. WFM and RGB are measured in a
+thread of their own for each camera: decoding a picture takes tens of milliseconds, and done in the
+thread that fetches the frames it held them up, which showed as stutter and lag.
+A camera with a login answers its first request with how to log in; ShotReady remembers that, so
+every later frame is one request, not two. A wired connection matters: over a jittery Wi-Fi link the
+rate drops a lot.
+
+**IP video (optional, per camera):** for smooth live video, the camera streams its own H.264 to this
+computer instead (the C80 offers UDP, RTP, RTP+FEC, SRT and RTSP+RTP; ShotReady takes UDP and RTP,
+as an MPEG-2 transport stream or as H.264 straight in RTP, found by itself). In
+**Settings > IP video**, tick the camera and note its UDP port (5001 for the first camera, and so on);
+on the camera, set IP streaming to UDP or RTP, the destination to this computer's address shown
+there, that port, 1920x1080, 9 Mbps, and start streaming. Its card then shows the stream ("IP · 50
+fps" in the corner), through the LUT when the LUT button is on; Settings shows how it is arriving. The
+camera's settings, checks, tally, focus box, tap to focus, 1-Shot AF and Adjust work as before; WFM
+and RGB keep their 4 readings a second, from a single picture every 250 ms while the card is on
+screen (once a second otherwise, as for any camera). While IP video is on, the camera's streaming cannot be used for anything
+else. If this computer cannot decode the stream, the card goes back to single pictures and says why.
+The demo's C80-2 streams the test clip to port 5002 to try it.
 
 **Picture off, per camera:** hover over a camera's picture and click **Picture off** to save network
 bandwidth. That camera then sends no pictures at all: none to the Dashboard or to phones, no slow

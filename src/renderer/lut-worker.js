@@ -3,12 +3,18 @@
 // thread too), and draws it with WebGL2, where the GPU looks every pixel up in the LUT. Only the
 // newest frame is drawn: a frame that arrives while one is being decoded replaces the waiting one.
 // Nothing here changes the camera, and the waveform still reads the Log picture.
+//
+// The same thread also shows a camera's own IP video (source 'h264'): the pictures come whole from
+// the camera's thread (ipvideo.mjs), are decoded here with WebCodecs, and drawn the same way, with the
+// LUT or without it.
 'use strict';
 
 const BOUNDARY = '--shotreadyframe';
 let gl = null, canvas = null, running = false, abort = null;
 let pictureTex = null, lutTex = null, lutReady = false, uni = {};
 let waiting = null, decoding = false, shown = false;
+let source = 'mjpeg', needLut = true, lastDraw = 0, watch = null;
+let decoder = null, codec = null, waitKey = true, count = 0, held = null, saidWaiting = false, since = 0;
 
 const fail = (message) => { postMessage({ type: 'failed', message }); stop(); };
 
@@ -16,6 +22,7 @@ onmessage = (e) => {
   const m = e.data;
   if (m.type === 'start') start(m);
   else if (m.type === 'lut') setLut(m);
+  else if (m.type === 'nolut') { needLut = false; lutReady = false; if (gl) gl.uniform1i(uni.useLut, 0); }
   else if (m.type === 'stop') stop();
 };
 
@@ -36,6 +43,7 @@ uniform sampler3D lut;
 uniform bool useLut;
 uniform bool inputFull;   // the LUT wants full-range input: the picture's video levels are expanded first
 uniform bool outputLegal; // the LUT gives video levels: expanded for the computer screen
+uniform bool pictureFull; // decoded IP video is already full range: a legal-input LUT gets it squeezed back
 uniform vec3 domainMin, domainMax;
 uniform float size;
 in vec2 uv;
@@ -43,7 +51,8 @@ out vec4 color;
 void main() {
   vec3 c = texture(picture, uv).rgb;
   if (useLut) {
-    if (inputFull) c = clamp((c * 255.0 - 16.0) / 219.0, 0.0, 1.0);
+    if (pictureFull) { if (!inputFull) c = (c * 219.0 + 16.0) / 255.0; }
+    else if (inputFull) c = clamp((c * 255.0 - 16.0) / 219.0, 0.0, 1.0);
     vec3 t = clamp((c - domainMin) / (domainMax - domainMin), 0.0, 1.0);
     c = texture(lut, t * ((size - 1.0) / size) + 0.5 / size).rgb;
     if (outputLegal) c = (c * 255.0 - 16.0) / 219.0;
@@ -59,8 +68,10 @@ function shader(type, source) {
   return s;
 }
 
-function start({ canvas: c, url }) {
+function start({ canvas: c, url, source: from = 'mjpeg', lut = true }) {
   canvas = c;
+  source = from;
+  needLut = lut;
   try {
     gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, premultipliedAlpha: false, preserveDrawingBuffer: false });
     if (!gl) throw new Error('WebGL2 is not available on this computer');
@@ -70,7 +81,8 @@ function start({ canvas: c, url }) {
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog) || 'shader did not link');
     gl.useProgram(prog);
-    for (const n of ['picture', 'lut', 'useLut', 'inputFull', 'outputLegal', 'domainMin', 'domainMax', 'size']) uni[n] = gl.getUniformLocation(prog, n);
+    for (const n of ['picture', 'lut', 'useLut', 'inputFull', 'outputLegal', 'pictureFull', 'domainMin', 'domainMax', 'size']) uni[n] = gl.getUniformLocation(prog, n);
+    gl.uniform1i(uni.pictureFull, source === 'h264' ? 1 : 0);
     gl.uniform1i(uni.picture, 0);
     gl.uniform1i(uni.lut, 1);
     gl.uniform1i(uni.useLut, 0);
@@ -84,7 +96,105 @@ function start({ canvas: c, url }) {
     return;
   }
   running = true;
-  read(url);
+  // Said when no picture has been drawn for 3 seconds (an IP stream that has not started, or stopped).
+  since = Date.now();
+  watch = setInterval(() => {
+    if (Date.now() - (lastDraw || since) > 3000 && !saidWaiting) { shown = false; saidWaiting = true; postMessage({ type: 'waiting' }); }
+  }, 1000);
+  if (source === 'h264') readVideo(url); else read(url);
+}
+
+// ---------- the camera's own IP video ----------
+// Pictures as the camera's thread hands them on: a 13-byte header (length, 1 for a key frame, time
+// in microseconds or -1) and the picture in Annex B.
+async function readVideo(url) {
+  while (running) {
+    try {
+      abort = new AbortController();
+      const res = await fetch(url, { signal: abort.signal, cache: 'no-store' });
+      if (!res.ok || !res.body) throw new Error(`video HTTP ${res.status}`);
+      const reader = res.body.getReader();
+      let buf = new Uint8Array(0);
+      waitKey = true; // a new connection starts at the last key frame
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done || !running) break;
+        const next = new Uint8Array(buf.length + value.length);
+        next.set(buf);
+        next.set(value, buf.length);
+        buf = next;
+        let o = 0;
+        while (buf.length - o >= 13) {
+          const view = new DataView(buf.buffer, buf.byteOffset + o, 13);
+          const len = view.getUint32(0), key = buf[o + 4] === 1, pts = view.getFloat64(5);
+          if (buf.length - o - 13 < len) break;
+          picture(buf.slice(o + 13, o + 13 + len), key, pts);
+          o += 13 + len;
+        }
+        buf = buf.subarray(o);
+      }
+    } catch { /* the stream dropped: try again */ }
+    if (running) await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+function nalTypes(data) {
+  const out = [];
+  for (let i = 0; i + 3 < data.length; i++) {
+    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) { out.push([data[i + 3] & 0x1f, i + 3]); i += 2; }
+  }
+  return out;
+}
+
+function codecOf(data) {
+  const sps = nalTypes(data).find(([t]) => t === 7);
+  if (!sps || sps[1] + 3 >= data.length) return null;
+  const hex = (n) => n.toString(16).padStart(2, '0');
+  return `avc1.${hex(data[sps[1] + 1])}${hex(data[sps[1] + 2])}${hex(data[sps[1] + 3])}`;
+}
+
+// While the decoder is being set up, the pictures that arrive are held, then decoded in order.
+function picture(data, key, pts) {
+  if (key) {
+    const c = codecOf(data);
+    if (c && c !== codec) {
+      held = [[data, key, pts]];
+      configure(c).then(() => { const list = held || []; held = null; for (const p of list) feed(...p); });
+      return;
+    }
+  }
+  if (held) { held.push([data, key, pts]); return; }
+  feed(data, key, pts);
+}
+
+function feed(data, key, pts) {
+  if (!decoder || decoder.state !== 'configured') return;
+  // Too far behind: the pictures until the next key frame are left out and decoding starts again there.
+  if (!key && (waitKey || decoder.decodeQueueSize > 8)) { waitKey = true; return; }
+  if (key && waitKey && decoder.decodeQueueSize > 8) { decoder.reset(); decoder.configure({ codec, optimizeForLatency: true }); }
+  waitKey = false;
+  count++;
+  try {
+    decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: pts >= 0 ? pts : count * 40000, data }));
+  } catch { waitKey = true; }
+}
+
+async function configure(c) {
+  codec = c;
+  try {
+    if (typeof VideoDecoder === 'undefined') throw new Error('this computer cannot decode video here (no WebCodecs)');
+    const ok = await VideoDecoder.isConfigSupported({ codec: c, optimizeForLatency: true });
+    if (!ok.supported) throw new Error(`this computer cannot decode the camera's video (${c})`);
+    decoder?.close?.();
+    decoder = new VideoDecoder({
+      output: (frame) => { draw(frame); frame.close(); },
+      error: () => { waitKey = true; decoder = null; codec = null; }, // started again at the next key frame
+    });
+    decoder.configure({ codec: c, optimizeForLatency: true });
+    waitKey = true;
+  } catch (e) {
+    fail(e.message);
+  }
 }
 
 function setLut({ size, data, min, max, input, output }) {
@@ -176,20 +286,26 @@ async function decodeNewest() {
 
 function draw(pic) {
   if (!gl || !running) return;
-  if (canvas.width !== pic.width || canvas.height !== pic.height) {
-    canvas.width = pic.width;
-    canvas.height = pic.height;
-    gl.viewport(0, 0, pic.width, pic.height);
+  const w = pic.displayWidth ?? pic.width, h = pic.displayHeight ?? pic.height;
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+    gl.viewport(0, 0, w, h);
   }
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, pictureTex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, pic);
-  if (!lutReady) return; // nothing is shown until the LUT is in, so the Log picture never flashes up as if graded
+  if (needLut && !lutReady) return; // nothing is shown until the LUT is in, so the Log picture never flashes up as if graded
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+  lastDraw = Date.now();
+  saidWaiting = false;
   if (!shown) { shown = true; postMessage({ type: 'drawing' }); }
 }
 
 function stop() {
   running = false;
+  clearInterval(watch);
   abort?.abort();
+  try { decoder?.close(); } catch { /* already closed */ }
+  decoder = null;
 }

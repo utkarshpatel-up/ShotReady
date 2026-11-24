@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, clipboard, Menu, screen, nativeImage } from 'electron';
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { networkInterfaces } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -13,6 +14,7 @@ import { ShotReadyService } from '../core/service.mjs';
 import { AtemLink, FakeAtemLink } from '../core/atem.mjs';
 import { PROFILES } from '../core/engine.mjs';
 import { demoBodies, startSimulator, labelName } from '../sim/cameras.mjs';
+import { startIpVideoSender } from '../sim/ipvideo-sender.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const isDemo = process.argv.includes('--demo');
@@ -21,6 +23,7 @@ const dataOverride = process.argv.find((a) => a.startsWith('--data-dir='))?.slic
 
 let win, bar, svc, sim, playout, preprocessor, streamer, mobile;
 let mobileError = null;
+let demoIp = null;
 const qrcode = createRequire(import.meta.url)('qrcode-generator');
 
 const encrypt = (s) => {
@@ -106,6 +109,9 @@ async function startService() {
     let tick = 0;
     sim = await startSimulator(demoBodies().map((b, i) => ({ ...b, focus: DEMO_FOCUS[i], detect: DEMO_PEOPLE[i] || [], frame: () => demoFrame(i, tick++) })));
     for (const b of Object.values(sim.bodies)) b.frameDelayMs = 60;
+    // Demo: C80-2 streams IP video (the test clip, as an MPEG-TS over UDP) to port 5002, its default
+    // port in Settings > IP video, so the IP video can be tried. Absent from a packaged app.
+    startIpVideoSender({ port: 5002, file: join(here, '../../test/fixtures/bars.mp4'), mode: 'ts' }).then((s) => { demoIp = s; }).catch(() => {});
     // Simulator ports change each launch, so a demo always starts from a clean config.
     const config = sim.config({ pollSeconds: 10 });
     config.locations.push({ label: 'Cam-09', atemInput: 9 }, { label: 'Cam-10', atemInput: 10 });
@@ -141,6 +147,7 @@ async function startService() {
   svc.on('wave', (w) => send('wave', w));
   svc.on('focus', (f) => send('focus', f));
   svc.on('feedstat', (f) => send('feedstat', f));
+  svc.on('ipstatus', (x) => send('ipstatus', x));
   // Video out: the output window on the HDMI display. Nothing opens until it is turned on. Clips can
   // be pre-processed in the background by a hidden window of their own.
   preprocessor = new Preprocessor({ page: join(here, '../renderer/preprocess.html'), preload: join(here, 'preload.cjs') });
@@ -288,6 +295,12 @@ const api = {
   sheet: () => svc.sheet(),
   workload: () => svc.workloadView(),
   setPicture: (id, on) => svc.setPicture(String(id), !!on),
+  // Settings > IP video: where the cameras send their stream (this computer's addresses), and how
+  // each camera's stream is arriving.
+  ipVideoStatus: () => ({
+    addresses: Object.entries(networkInterfaces()).flatMap(([name, list]) => (list || []).filter((a) => a.family === 'IPv4' && !a.internal).map((a) => ({ name, ip: a.address }))),
+    status: svc.ipStatus,
+  }),
   stepBaseIso: (dir, id) => svc.stepBaseIso(Number(dir) > 0 ? 1 : -1, id || null),
   setBaselineHours: (id, hours) => svc.setBaselineHours(id, hours),
   events: () => svc.events,
@@ -515,5 +528,5 @@ if (!app.requestSingleInstanceLock() && !dataOverride) {
     logGraphics();
   });
   app.on('window-all-closed', () => app.quit());
-  app.on('before-quit', () => { mobile?.stop(); streamer?.close(); preprocessor?.stop(); playout?.stop(); svc?.stop(); svc?.atem?.disconnect(); sim?.close(); });
+  app.on('before-quit', () => { demoIp?.stop(); mobile?.stop(); streamer?.close(); preprocessor?.stop(); playout?.stop(); svc?.stop(); svc?.atem?.disconnect(); sim?.close(); });
 }
